@@ -1,0 +1,31 @@
+import unittest
+
+from voyce.audio import (
+    AudioDependencyError,
+    MicVadConfig,
+    SherpaOfflineAsrConfig,
+    SileroVadTurnProducer,
+    _require_audio_dependencies,
+)
+
+
+class AudioTests(unittest.TestCase):
+    def test_missing_vad_file_fails_before_audio_imports(self):
+        with self.assertRaises(FileNotFoundError):
+            SileroVadTurnProducer(MicVadConfig(vad_model_path="missing-silero-vad.onnx"))
+
+    def test_audio_dependencies_are_optional(self):
+        try:
+            _require_audio_dependencies()
+        except AudioDependencyError as exc:
+            self.assertIn("optional audio dependencies", str(exc))
+
+    def test_asr_config_requires_a_model_family_later(self):
+        config = SherpaOfflineAsrConfig(tokens="tokens.txt")
+
+        self.assertEqual(config.tokens, "tokens.txt")
+        self.assertEqual(config.provider, "cpu")
+
+
+if __name__ == "__main__":
+    unittest.main()
