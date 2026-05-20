@@ -29,6 +29,8 @@ Voyce measures the points that decide whether the loop feels alive:
 
 - `asr_duration_ms`
 - `asr_to_first_token_ms`
+- `capture_duration_ms`
+- `capture_to_playback_start_ms`
 - `turn_to_first_token_ms`
 - `turn_to_first_phrase_ms`
 - `turn_to_playback_start_ms`

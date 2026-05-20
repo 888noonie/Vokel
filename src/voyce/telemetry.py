@@ -43,6 +43,9 @@ class LatencyTrace:
 
     def summary_ms(self) -> dict[str, float]:
         pairs = {
+            "capture_duration": ("capture_started", "capture_finished"),
+            "capture_to_first_token": ("capture_started", "first_token"),
+            "capture_to_playback_start": ("capture_started", "playback_started"),
             "asr_duration": ("asr_started", "asr_finished"),
             "asr_to_first_token": ("asr_finished", "first_token"),
             "turn_to_first_token": ("turn_submitted", "first_token"),

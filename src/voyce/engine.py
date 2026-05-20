@@ -64,12 +64,24 @@ class ConversationEngine:
     ) -> None:
         turns_processed = 0
         while max_turns is None or turns_processed < max_turns:
+            self.trace.reset()
+            self.trace.mark("capture_started")
             try:
                 turn = await producer.next_turn()
             except StopAsyncIteration:
                 return
 
-            self.trace.reset()
+            audio_seconds = (
+                len(turn.audio_samples) / turn.sample_rate
+                if turn.audio_samples and turn.sample_rate
+                else 0
+            )
+            self.trace.mark(
+                "capture_finished",
+                has_audio=turn.has_audio,
+                audio_seconds=audio_seconds,
+                samples=len(turn.audio_samples),
+            )
             self.trace.mark("asr_started", has_audio=turn.has_audio)
             transcript = await asr.transcribe(turn)
             self.trace.mark("asr_finished", chars=len(transcript))

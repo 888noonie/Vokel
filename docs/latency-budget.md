@@ -7,6 +7,8 @@ Voyce optimizes for perceived conversational immediacy, not just raw throughput.
 | Metric | Target | Notes |
 | --- | ---: | --- |
 | `barge_in_to_playback_stop_ms` | `<150` | Most important interactive safety metric. |
+| `capture_duration_ms` | variable | Time spent waiting for VAD to close a user turn. |
+| `capture_to_playback_start_ms` | context-dependent | Full benchmark wall-clock path from listen start. |
 | `turn_to_first_token_ms` | `<500` | Keeps the model from feeling absent. |
 | `turn_to_first_phrase_ms` | `<900` | First speakable text unit. |
 | `turn_to_playback_start_ms` | `<1000` | The key "it is answering me" moment. |

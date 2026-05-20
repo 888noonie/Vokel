@@ -10,13 +10,17 @@ class LatencyTraceTests(unittest.TestCase):
                 1_000_000_000,
                 1_050_000_000,
                 1_060_000_000,
-                1_180_000_000,
+                1_110_000_000,
+                1_120_000_000,
                 1_240_000_000,
                 1_300_000_000,
+                1_360_000_000,
             ]
         )
         trace = LatencyTrace(clock=lambda: next(ticks))
 
+        trace.mark("capture_started")
+        trace.mark("capture_finished")
         trace.mark("asr_started")
         trace.mark("asr_finished")
         trace.mark("turn_submitted")
@@ -27,6 +31,8 @@ class LatencyTraceTests(unittest.TestCase):
         self.assertEqual(
             trace.summary_ms(),
             {
+                "capture_duration": 50.0,
+                "capture_to_first_token": 240.0,
                 "asr_duration": 50.0,
                 "asr_to_first_token": 130.0,
                 "turn_to_first_token": 120.0,
