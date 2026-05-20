@@ -25,6 +25,7 @@ Every architectural choice should protect that loop.
 - Keep every stream cancellable.
 - Do not let microphone, playback, or model code leak through the whole system.
 - Prefer named audio profiles over scattering one-off VAD settings through commands.
+- Verify Pulse/PipeWire route availability before trusting headset profile benchmarks.
 - Avoid committing model weights, generated audio, caches, or local build notes.
 - Run `python3 -m pytest -q` before publishing code changes.
 

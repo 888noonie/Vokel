@@ -145,6 +145,7 @@ Named audio profiles:
 
 ```bash
 PYTHONPATH=src python3 scripts/audio_profiles.py
+PYTHONPATH=src python3 scripts/audio_routes.py --profile headset-wired
 ```
 
 Latest local mic benchmark result:

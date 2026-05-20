@@ -67,6 +67,29 @@ List profiles:
 PYTHONPATH=src python3 scripts/audio_profiles.py
 ```
 
+Inspect actual Pulse/PipeWire routes for a profile:
+
+```bash
+PYTHONPATH=src python3 scripts/audio_routes.py --profile headset-wired
+```
+
+The route script marks the current default source and whether the profile's
+preferred source is available. Do not trust a profile benchmark until the route
+is usable.
+
+Example route warning:
+
+```text
+Family 17h/19h HD Audio Controller Headphones Stereo Microphone [profile]
+  available=not available usable=False
+Family 17h/19h HD Audio Controller Digital Microphone [default]
+  available=availability unknown usable=True
+```
+
+That means the headset profile exists, but the OS is not currently exposing the
+headset mic as an available input. For wired headsets, check that the plug/cable
+supports a microphone path and reseat the connector before comparing benchmarks.
+
 Current profiles:
 
 - `laptop-open`

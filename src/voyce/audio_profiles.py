@@ -10,12 +10,14 @@ class AudioProfile:
     name: str
     description: str
     mic: MicVadConfig
+    preferred_source_name: str | None = None
 
 
 PROFILES = {
     "laptop-open": AudioProfile(
         name="laptop-open",
         description="Laptop mic or room mic with DC offset correction and stronger gain.",
+        preferred_source_name="alsa_input.pci-0000_35_00.6.HiFi__Mic1__source",
         mic=MicVadConfig(
             device=8,
             input_gain=4.0,
@@ -27,6 +29,7 @@ PROFILES = {
     "headset-wired": AudioProfile(
         name="headset-wired",
         description="Wired headset/headphone mic baseline with stricter VAD.",
+        preferred_source_name="alsa_input.pci-0000_35_00.6.HiFi__Mic2__source",
         mic=MicVadConfig(
             device=7,
             input_gain=2.0,
@@ -38,6 +41,7 @@ PROFILES = {
     "headset-bluetooth": AudioProfile(
         name="headset-bluetooth",
         description="Bluetooth headset profile; tune after selecting the active Pulse/PipeWire source.",
+        preferred_source_name=None,
         mic=MicVadConfig(
             device=7,
             input_gain=2.0,
@@ -49,6 +53,7 @@ PROFILES = {
     "noisy-handset": AudioProfile(
         name="noisy-handset",
         description="Noisier open-air profile with stricter speech confirmation.",
+        preferred_source_name="alsa_input.pci-0000_35_00.6.HiFi__Mic1__source",
         mic=MicVadConfig(
             device=8,
             input_gain=3.0,

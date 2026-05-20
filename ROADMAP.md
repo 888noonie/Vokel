@@ -23,6 +23,7 @@ Exit check:
 Goal: replace passthrough text turns with one real microphone turn.
 
 Status: working. Laptop-open and headset-wired profiles have completed mic benchmarks.
+Route diagnostics now report whether the preferred headset input is actually available.
 
 - Maintain `docs/latency-budget.md`
 - Maintain `docs/model-matrix.md`
