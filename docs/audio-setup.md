@@ -110,6 +110,18 @@ PYTHONPATH=src python3 -m benchmarks.stst_latency \
   --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
 ```
 
+To prevent false headset benchmarks, require the profile route:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode mic-lm-studio \
+  --audio-profile headset-wired \
+  --require-profile-route \
+  --vad-model models/silero_vad.onnx \
+  --asr-tokens models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
+  --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
+```
+
 ## Audio Probes
 
 List input devices:

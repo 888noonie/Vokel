@@ -138,8 +138,24 @@ async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
         SileroVadTurnProducer,
     )
     from voyce.audio_profiles import get_audio_profile
+    from voyce.audio_routes import find_source, load_pulse_sources
 
-    profile_config = get_audio_profile(args.audio_profile).mic if args.audio_profile else None
+    profile = get_audio_profile(args.audio_profile) if args.audio_profile else None
+    profile_config = profile.mic if profile else None
+    if args.require_profile_route and profile and profile.preferred_source_name:
+        source = find_source(load_pulse_sources(), profile.preferred_source_name)
+        if source is None:
+            raise RuntimeError(f"Profile source is missing: {profile.preferred_source_name}")
+        if not source.usable_input:
+            raise RuntimeError(
+                f"Profile source is not usable: {source.description} "
+                f"available={source.active_port_available}"
+            )
+        if not source.is_default:
+            raise RuntimeError(
+                f"Profile source is not default: {source.description}. "
+                "Run scripts/audio_routes.py for diagnostics."
+            )
     producer = SileroVadTurnProducer(
         MicVadConfig(
             vad_model_path=args.vad_model,
@@ -237,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--audio-profile",
         choices=("laptop-open", "headset-wired", "headset-bluetooth", "noisy-handset"),
         default=None,
+    )
+    parser.add_argument(
+        "--require-profile-route",
+        action="store_true",
+        help="Fail if the selected profile's preferred Pulse/PipeWire source is not usable/default.",
     )
     parser.add_argument("--asr-tokens", default="")
     parser.add_argument("--asr-threads", type=int, default=2)
