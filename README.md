@@ -47,6 +47,12 @@ Current latency work points toward three production choices:
 
 The immediate code path is still desktop-first. That keeps the behavior easy to measure before the Android Foreground Service port.
 
+## Project Memory
+
+- `AGENTS.md` keeps contributor and AI-agent operating rules in one place.
+- `ROADMAP.md` tracks measured milestones and open technical decisions.
+- `build-log.md` is ignored for local experiment notes; start from `build-log.example.md` when useful.
+
 ## Setup
 
 ```bash
