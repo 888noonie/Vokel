@@ -11,6 +11,7 @@ from voyce.config import LmStudioConfig
 from voyce.engine import ConversationEngine
 from voyce.lm_studio import ChatMessage, LmStudioClient
 from voyce.playback import PlaybackSink, build_playback_sink
+from voyce.progress import ConsoleProgressObserver
 from voyce.telemetry import LatencyTrace
 from voyce.turns import AsrEngine, AudioTurn, PassthroughAsr, TextTurnProducer, TurnProducer
 
@@ -77,8 +78,11 @@ async def run_engine_benchmark(
     asr: AsrEngine,
     playback: PlaybackSink,
     producer: TurnProducer,
+    progress: bool = False,
 ) -> BenchmarkResult:
     trace = LatencyTrace()
+    if progress:
+        trace.add_observer(ConsoleProgressObserver())
     engine = ConversationEngine(llm=llm, playback=playback, trace=trace, echo_tokens=False)
     await engine.start()
     try:
@@ -114,6 +118,7 @@ async def run_synthetic(args: argparse.Namespace) -> BenchmarkResult:
         asr=asr,
         playback=playback,
         producer=TextTurnProducer([args.prompt]),
+        progress=args.progress,
     )
 
 
@@ -127,6 +132,7 @@ async def run_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
             asr=PassthroughAsr(),
             playback=playback,
             producer=TextTurnProducer([args.prompt]),
+            progress=args.progress,
         )
 
 
@@ -217,6 +223,7 @@ async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
             asr=asr,
             playback=playback,
             producer=producer,
+            progress=args.progress,
         )
 
 
@@ -239,6 +246,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="Give one short response for the Voyce latency benchmark.",
     )
     parser.add_argument("--json", action="store_true", help="Print full JSON events.")
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print human-readable pipeline cues.",
+    )
     parser.add_argument(
         "--playback",
         choices=("console", "spd-say"),
@@ -304,6 +317,8 @@ async def async_main(args: argparse.Namespace) -> BenchmarkResult:
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.json:
+        args.progress = False
     result = asyncio.run(async_main(args))
     if args.json:
         print(result.to_json())

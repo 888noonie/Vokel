@@ -150,6 +150,14 @@ PYTHONPATH=src python3 -m benchmarks.stst_latency \
   --playback spd-say
 ```
 
+Benchmarks print a cue before capture starts:
+
+```text
+[listen] Start speaking or play test clip now...
+```
+
+Use `--no-progress` to suppress human-readable cues.
+
 Named audio profiles:
 
 ```bash

@@ -21,6 +21,7 @@ class LatencyTrace:
     def __init__(self, clock: Clock | None = None):
         self._clock = clock or time.perf_counter_ns
         self._events: list[TraceEvent] = []
+        self._observers: list[Any] = []
 
     @property
     def events(self) -> tuple[TraceEvent, ...]:
@@ -29,7 +30,12 @@ class LatencyTrace:
     def mark(self, name: str, **fields: Any) -> TraceEvent:
         event = TraceEvent(name=name, timestamp_ns=self._clock(), fields=fields)
         self._events.append(event)
+        for observer in tuple(self._observers):
+            observer.on_event(event)
         return event
+
+    def add_observer(self, observer: Any) -> None:
+        self._observers.append(observer)
 
     def first(self, name: str) -> TraceEvent | None:
         return next((event for event in self._events if event.name == name), None)

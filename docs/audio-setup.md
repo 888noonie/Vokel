@@ -58,6 +58,13 @@ PYTHONPATH=src python3 -m benchmarks.stst_latency \
 ```
 
 Speak one short sentence and pause. The benchmark should report ASR and LLM timings.
+Start the test clip only after this cue appears:
+
+```text
+[listen] Start speaking or play test clip now...
+```
+
+Use `--no-progress` for machine-readable or unattended runs.
 
 ## Audio Profiles
 

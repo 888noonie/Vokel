@@ -61,6 +61,13 @@ Full JSON trace:
 PYTHONPATH=src python3 -m benchmarks.stst_latency --json
 ```
 
+JSON mode disables progress cues automatically. For normal human tests, the cue
+to start speaking or play a clip is:
+
+```text
+[listen] Start speaking or play test clip now...
+```
+
 ## Interpretation
 
 - If first token is slow, tune or replace the LLM/runtime.
