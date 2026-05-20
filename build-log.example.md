@@ -33,3 +33,33 @@ Latency:
 Decision:
 
 - 
+
+## Example Benchmark Entry
+
+### 2026-05-20
+
+Context:
+
+- LM Studio text-path benchmark against the current local model.
+
+Commands:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency --mode lm-studio
+```
+
+Results:
+
+- Record exact values from your local run.
+
+Latency:
+
+- `asr_duration_ms=0.0`
+- `asr_to_first_token_ms=`
+- `turn_to_first_token_ms=`
+- `turn_to_first_phrase_ms=`
+- `turn_to_playback_start_ms=`
+
+Decision:
+
+- Keep, tune, or reject the backend based on the latency budget.

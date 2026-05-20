@@ -52,6 +52,8 @@ The immediate code path is still desktop-first. That keeps the behavior easy to 
 - `AGENTS.md` keeps contributor and AI-agent operating rules in one place.
 - `ROADMAP.md` tracks measured milestones and open technical decisions.
 - `build-log.md` is ignored for local experiment notes; start from `build-log.example.md` when useful.
+- `docs/latency-budget.md` defines the STST timing targets.
+- `docs/model-matrix.md` tracks backend candidates before deeper integration.
 
 ## Setup
 
@@ -100,4 +102,18 @@ step after this first measurable audio producer.
 
 ```bash
 python3 -m unittest discover -s tests
+```
+
+## Benchmark
+
+Synthetic STST benchmark:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency
+```
+
+Live LM Studio text-path benchmark:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency --mode lm-studio
 ```

@@ -22,6 +22,9 @@ Exit check:
 
 Goal: replace passthrough text turns with one real microphone turn.
 
+- Maintain `docs/latency-budget.md`
+- Maintain `docs/model-matrix.md`
+- Run synthetic and LM Studio benchmarks before changing audio backends
 - Install optional audio dependencies
 - Download VAD and ASR model files
 - Capture VAD-bounded microphone turns

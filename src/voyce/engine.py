@@ -18,11 +18,13 @@ class ConversationEngine:
         playback: PlaybackSink,
         config: VoiceLoopConfig | None = None,
         trace: LatencyTrace | None = None,
+        echo_tokens: bool = True,
     ):
         self.llm = llm
         self.playback = playback
         self.config = config or VoiceLoopConfig()
         self.trace = trace or LatencyTrace()
+        self.echo_tokens = echo_tokens
         self.history: list[ChatMessage] = [
             {"role": "system", "content": self.config.system_prompt}
         ]
@@ -100,7 +102,8 @@ class ConversationEngine:
                 if not saw_token:
                     self.trace.mark("first_token")
                     saw_token = True
-                print(token, end="", flush=True)
+                if self.echo_tokens:
+                    print(token, end="", flush=True)
                 assistant_text.append(token)
                 for phrase in chunker.push(token):
                     if not saw_phrase:
