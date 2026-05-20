@@ -251,7 +251,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vad-model", default="models/silero_vad.onnx")
     parser.add_argument(
         "--audio-profile",
-        choices=("laptop-open", "headset-wired", "headset-bluetooth", "noisy-handset"),
+        choices=(
+            "laptop-mic-headphones",
+            "laptop-open",
+            "headset-wired",
+            "headset-bluetooth",
+            "noisy-handset",
+        ),
         default=None,
     )
     parser.add_argument(

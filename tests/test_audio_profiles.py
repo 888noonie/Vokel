@@ -7,6 +7,7 @@ class AudioProfileTests(unittest.TestCase):
     def test_profiles_are_listed(self):
         names = [profile.name for profile in list_audio_profiles()]
 
+        self.assertIn("laptop-mic-headphones", names)
         self.assertIn("headset-wired", names)
         self.assertIn("laptop-open", names)
 

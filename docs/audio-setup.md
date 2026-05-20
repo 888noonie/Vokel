@@ -51,7 +51,7 @@ Then run:
 ```bash
 PYTHONPATH=src python3 -m benchmarks.stst_latency \
   --mode mic-lm-studio \
-  --audio-profile laptop-open \
+  --audio-profile laptop-mic-headphones \
   --vad-model models/silero_vad.onnx \
   --asr-tokens models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
   --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
@@ -92,6 +92,7 @@ supports a microphone path and reseat the connector before comparing benchmarks.
 
 Current profiles:
 
+- `laptop-mic-headphones` - recommended dev baseline
 - `laptop-open`
 - `headset-wired`
 - `headset-bluetooth`
@@ -191,6 +192,41 @@ turn_duration_ms=669.4
 The desktop default source may still point to the internal digital mic even when
 the headset stereo mic is present. Use `pactl list short sources` and the probe
 scripts to confirm routing before comparing profile results.
+
+## Recommended Dev Baseline
+
+For current desktop work, use laptop digital mic input with headphone-isolated
+playback:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode mic-lm-studio \
+  --audio-profile laptop-mic-headphones \
+  --playback spd-say \
+  --vad-model models/silero_vad.onnx \
+  --asr-tokens models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
+  --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
+```
+
+First `laptop-mic-headphones` audible benchmark:
+
+```text
+benchmark=mic-lm-studio
+capture_duration_ms=15362.6
+capture_to_first_token_ms=16000.6
+capture_to_playback_start_ms=16744.2
+asr_duration_ms=256.1
+asr_to_first_token_ms=382.0
+turn_to_first_token_ms=379.0
+turn_to_first_phrase_ms=1122.4
+turn_to_playback_start_ms=1122.5
+generation_duration_ms=1275.7
+turn_duration_ms=1275.8
+```
+
+This profile is honest and stable for development, but the first audible run
+also shows why phrase-boundary tuning matters: first playback crossed the
+`1000ms` target on that response.
 
 ## Current Limits
 

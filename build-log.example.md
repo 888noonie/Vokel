@@ -161,3 +161,37 @@ Latency:
 Decision:
 
 - Keep headset-first product constraint. Continue route-specific tuning.
+
+## Example Recommended Dev Profile Entry
+
+### 2026-05-20
+
+Context:
+
+- `laptop-mic-headphones` profile.
+- Laptop digital mic input.
+- Headphone-isolated `spd-say` playback.
+
+Commands:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode mic-lm-studio \
+  --audio-profile laptop-mic-headphones \
+  --playback spd-say \
+  --vad-model models/silero_vad.onnx \
+  --asr-tokens models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
+  --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
+```
+
+Latency:
+
+- `capture_duration_ms=15362.6`
+- `asr_duration_ms=256.1`
+- `turn_to_first_token_ms=379.0`
+- `turn_to_playback_start_ms=1122.5`
+
+Decision:
+
+- Use as the default desktop development profile.
+- Tune phrase chunking/prompting to bring first playback below `1000ms`.

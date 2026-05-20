@@ -141,6 +141,15 @@ python3 scripts/download_models.py
 
 Then see `docs/audio-setup.md`.
 
+Recommended dev profile:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode mic-lm-studio \
+  --audio-profile laptop-mic-headphones \
+  --playback spd-say
+```
+
 Named audio profiles:
 
 ```bash

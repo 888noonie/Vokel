@@ -14,6 +14,21 @@ class AudioProfile:
 
 
 PROFILES = {
+    "laptop-mic-headphones": AudioProfile(
+        name="laptop-mic-headphones",
+        description=(
+            "Recommended dev baseline: stable laptop digital mic input with "
+            "headphone-isolated playback."
+        ),
+        preferred_source_name="alsa_input.pci-0000_35_00.6.HiFi__Mic1__source",
+        mic=MicVadConfig(
+            device=7,
+            input_gain=2.0,
+            threshold=0.35,
+            min_silence_duration=0.35,
+            min_speech_duration=0.1,
+        ),
+    ),
     "laptop-open": AudioProfile(
         name="laptop-open",
         description="Laptop mic or room mic with DC offset correction and stronger gain.",

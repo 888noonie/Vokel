@@ -23,7 +23,11 @@ Exit check:
 Goal: replace passthrough text turns with one real microphone turn.
 
 Status: working. Laptop-open and headset-wired profiles have completed mic benchmarks.
+`laptop-mic-headphones` is the recommended dev baseline until a true headset mic route is available.
 Route diagnostics now report whether the preferred headset input is actually available.
+
+First audible `laptop-mic-headphones` run completed. Next tuning target:
+`turn_to_playback_start_ms < 1000`.
 
 - Maintain `docs/latency-budget.md`
 - Maintain `docs/model-matrix.md`

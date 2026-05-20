@@ -44,6 +44,7 @@ No backend graduates from this matrix until it produces benchmark numbers for:
 
 | Profile | Purpose | Current Status |
 | --- | --- | --- |
+| `laptop-mic-headphones` | Recommended dev baseline: stable digital mic input with headphone playback. | Added. |
 | `laptop-open` | Existing laptop mic baseline with DC offset correction. | Working. |
 | `headset-wired` | Headset-first baseline for low feedback and cleaner barge-in. | Added; needs repeated runs. |
 | `headset-bluetooth` | Bluetooth headset path for Android-like use. | Added; needs route-specific tuning. |
