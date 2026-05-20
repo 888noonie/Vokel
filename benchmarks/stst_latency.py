@@ -10,7 +10,7 @@ from typing import Any
 from voyce.config import LmStudioConfig
 from voyce.engine import ConversationEngine
 from voyce.lm_studio import ChatMessage, LmStudioClient
-from voyce.playback import PlaybackSink
+from voyce.playback import PlaybackSink, build_playback_sink
 from voyce.telemetry import LatencyTrace
 from voyce.turns import AsrEngine, AudioTurn, PassthroughAsr, TextTurnProducer, TurnProducer
 
@@ -119,7 +119,7 @@ async def run_synthetic(args: argparse.Namespace) -> BenchmarkResult:
 
 async def run_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
     lm_config = LmStudioConfig(url=args.url, model=args.model)
-    playback = BenchmarkPlaybackSink()
+    playback = build_playback_sink(args.playback) if args.playback else BenchmarkPlaybackSink()
     async with LmStudioClient(lm_config) as llm:
         return await run_engine_benchmark(
             name="lm-studio",
@@ -163,7 +163,7 @@ async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
             whisper_decoder=args.whisper_decoder,
         )
     )
-    playback = BenchmarkPlaybackSink()
+    playback = build_playback_sink(args.playback) if args.playback else BenchmarkPlaybackSink()
     lm_config = LmStudioConfig(url=args.url, model=args.model)
     async with LmStudioClient(lm_config) as llm:
         return await run_engine_benchmark(
@@ -194,6 +194,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="Give one short response for the Voyce latency benchmark.",
     )
     parser.add_argument("--json", action="store_true", help="Print full JSON events.")
+    parser.add_argument(
+        "--playback",
+        choices=("console", "spd-say"),
+        default=None,
+        help="Use a real playback sink instead of the benchmark sink.",
+    )
 
     parser.add_argument("--url", default=LmStudioConfig.url)
     parser.add_argument("--model", default=LmStudioConfig.model)

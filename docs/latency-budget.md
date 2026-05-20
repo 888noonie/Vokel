@@ -41,6 +41,20 @@ PYTHONPATH=src python3 -m benchmarks.stst_latency \
   --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
 ```
 
+Playback stop benchmark:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.playback_latency --backend spd-say
+```
+
+LM Studio with audible `spd-say` playback:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode lm-studio \
+  --playback spd-say
+```
+
 Full JSON trace:
 
 ```bash

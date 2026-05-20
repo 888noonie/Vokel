@@ -42,6 +42,8 @@ Exit check:
 
 Goal: prove the full loop with actual audio output and interruption.
 
+Status: in progress. `spd-say` is available as a bridge backend with measured stop latency.
+
 - Add a real TTS `PlaybackSink`
 - Start playback as soon as the first phrase is queued
 - Stop playback immediately on user speech

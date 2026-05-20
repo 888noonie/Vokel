@@ -104,3 +104,30 @@ Latency:
 Decision:
 
 - Plausible. Proceed to real TTS playback and barge-in measurement.
+
+## Example Playback Benchmark Entry
+
+### 2026-05-20
+
+Context:
+
+- First cancellable audible backend using `spd-say`.
+
+Commands:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.playback_latency --backend spd-say --interrupt-after-ms 500
+```
+
+Results:
+
+- Playback stop latency was low enough for barge-in experiments.
+
+Latency:
+
+- `stop_latency_ms=3.1`
+- `speak_completion_after_stop_ms=0.0`
+
+Decision:
+
+- Use `spd-say` as a bridge backend while benchmarking better local TTS options.

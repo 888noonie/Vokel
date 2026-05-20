@@ -19,6 +19,7 @@ This file tracks candidates before we commit deeper integration work.
 | Kokoro ONNX | TTS | Lightweight, Android-capable, pleasant quality. | Preferred first real TTS benchmark. |
 | Sherpa-ONNX TTS | TTS | One speech runtime across ASR/VAD/TTS. | Candidate. |
 | Piper | TTS | Simple, proven local baseline. | Candidate for quick desktop sink. |
+| Speech Dispatcher `spd-say` | TTS bridge | Already available on the desktop test machine and cancellable. | Working bridge backend; not final fastest voice. |
 
 ## LLM Runtime
 

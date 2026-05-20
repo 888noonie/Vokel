@@ -121,6 +121,18 @@ Live LM Studio text-path benchmark:
 PYTHONPATH=src python3 -m benchmarks.stst_latency --mode lm-studio
 ```
 
+Playback stop benchmark:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.playback_latency --backend spd-say
+```
+
+Audible LM Studio benchmark:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency --mode lm-studio --playback spd-say
+```
+
 Real microphone benchmark setup:
 
 ```bash
