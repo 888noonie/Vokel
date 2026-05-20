@@ -141,6 +141,12 @@ python3 scripts/download_models.py
 
 Then see `docs/audio-setup.md`.
 
+Named audio profiles:
+
+```bash
+PYTHONPATH=src python3 scripts/audio_profiles.py
+```
+
 Latest local mic benchmark result:
 
 ```text

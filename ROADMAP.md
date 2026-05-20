@@ -22,6 +22,8 @@ Exit check:
 
 Goal: replace passthrough text turns with one real microphone turn.
 
+Status: working. Laptop-open and headset-wired profiles have completed mic benchmarks.
+
 - Maintain `docs/latency-budget.md`
 - Maintain `docs/model-matrix.md`
 - Prepare ignored local model storage with `scripts/download_models.py`

@@ -137,17 +137,46 @@ async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
         SherpaOfflineAsrConfig,
         SileroVadTurnProducer,
     )
+    from voyce.audio_profiles import get_audio_profile
 
+    profile_config = get_audio_profile(args.audio_profile).mic if args.audio_profile else None
     producer = SileroVadTurnProducer(
         MicVadConfig(
             vad_model_path=args.vad_model,
-            threshold=args.vad_threshold,
-            min_silence_duration=args.min_silence_duration,
-            min_speech_duration=args.min_speech_duration,
-            max_speech_seconds=args.max_speech_seconds,
+            sample_rate=profile_config.sample_rate if profile_config else 16_000,
+            read_seconds=profile_config.read_seconds if profile_config else 0.1,
+            threshold=args.vad_threshold
+            if args.vad_threshold is not None
+            else profile_config.threshold
+            if profile_config
+            else 0.25,
+            min_silence_duration=args.min_silence_duration
+            if args.min_silence_duration is not None
+            else profile_config.min_silence_duration
+            if profile_config
+            else 0.35,
+            min_speech_duration=args.min_speech_duration
+            if args.min_speech_duration is not None
+            else profile_config.min_speech_duration
+            if profile_config
+            else 0.1,
+            max_speech_seconds=args.max_speech_seconds
+            if args.max_speech_seconds is not None
+            else profile_config.max_speech_seconds
+            if profile_config
+            else 30,
+            vad_buffer_seconds=profile_config.vad_buffer_seconds if profile_config else 30,
             remove_dc_offset=not args.keep_dc_offset,
-            input_gain=args.input_gain,
-            device=args.audio_device,
+            input_gain=args.input_gain
+            if args.input_gain is not None
+            else profile_config.input_gain
+            if profile_config
+            else 1.0,
+            device=args.audio_device
+            if args.audio_device is not None
+            else profile_config.device
+            if profile_config
+            else None,
         )
     )
     asr = SherpaOfflineAsr(
@@ -204,6 +233,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--url", default=LmStudioConfig.url)
     parser.add_argument("--model", default=LmStudioConfig.model)
     parser.add_argument("--vad-model", default="models/silero_vad.onnx")
+    parser.add_argument(
+        "--audio-profile",
+        choices=("laptop-open", "headset-wired", "headset-bluetooth", "noisy-handset"),
+        default=None,
+    )
     parser.add_argument("--asr-tokens", default="")
     parser.add_argument("--asr-threads", type=int, default=2)
     parser.add_argument("--sense-voice-model", default="")
@@ -213,12 +247,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--moonshine-cached-decoder", default="")
     parser.add_argument("--whisper-encoder", default="")
     parser.add_argument("--whisper-decoder", default="")
-    parser.add_argument("--vad-threshold", type=float, default=0.25)
-    parser.add_argument("--min-silence-duration", type=float, default=0.35)
-    parser.add_argument("--min-speech-duration", type=float, default=0.1)
-    parser.add_argument("--max-speech-seconds", type=float, default=30)
+    parser.add_argument("--vad-threshold", type=float, default=None)
+    parser.add_argument("--min-silence-duration", type=float, default=None)
+    parser.add_argument("--min-speech-duration", type=float, default=None)
+    parser.add_argument("--max-speech-seconds", type=float, default=None)
     parser.add_argument("--keep-dc-offset", action="store_true")
-    parser.add_argument("--input-gain", type=float, default=1.0)
+    parser.add_argument("--input-gain", type=float, default=None)
     parser.add_argument("--audio-device", default=None)
 
     parser.add_argument("--asr-ms", type=float, default=120)

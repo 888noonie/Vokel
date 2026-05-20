@@ -39,3 +39,12 @@ No backend graduates from this matrix until it produces benchmark numbers for:
 - first playback
 - interruption stop time
 - memory and thermal behavior where relevant
+
+## Audio Profiles
+
+| Profile | Purpose | Current Status |
+| --- | --- | --- |
+| `laptop-open` | Existing laptop mic baseline with DC offset correction. | Working. |
+| `headset-wired` | Headset-first baseline for low feedback and cleaner barge-in. | Added; needs repeated runs. |
+| `headset-bluetooth` | Bluetooth headset path for Android-like use. | Added; needs route-specific tuning. |
+| `noisy-handset` | Future open-air/noisy profile. | Placeholder. |

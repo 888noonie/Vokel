@@ -51,14 +51,41 @@ Then run:
 ```bash
 PYTHONPATH=src python3 -m benchmarks.stst_latency \
   --mode mic-lm-studio \
-  --audio-device 8 \
-  --input-gain 4 \
+  --audio-profile laptop-open \
   --vad-model models/silero_vad.onnx \
   --asr-tokens models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
   --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
 ```
 
 Speak one short sentence and pause. The benchmark should report ASR and LLM timings.
+
+## Audio Profiles
+
+List profiles:
+
+```bash
+PYTHONPATH=src python3 scripts/audio_profiles.py
+```
+
+Current profiles:
+
+- `laptop-open`
+- `headset-wired`
+- `headset-bluetooth`
+- `noisy-handset`
+
+Use a profile, then override individual values only when needed:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode mic-lm-studio \
+  --audio-profile headset-wired \
+  --input-gain 2 \
+  --vad-threshold 0.35 \
+  --vad-model models/silero_vad.onnx \
+  --asr-tokens models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
+  --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
+```
 
 ## Audio Probes
 
@@ -107,6 +134,28 @@ This used:
 - Silero VAD threshold `0.25`
 - SenseVoice int8 ASR
 - LM Studio local chat server
+
+## Headset Profile Result
+
+Using `--audio-profile headset-wired` against the speech/noise loop:
+
+```text
+benchmark=mic-lm-studio
+capture_duration_ms=13452.3
+capture_to_first_token_ms=13990.7
+capture_to_playback_start_ms=14143.4
+asr_duration_ms=132.8
+asr_to_first_token_ms=405.6
+turn_to_first_token_ms=405.6
+turn_to_first_phrase_ms=557.7
+turn_to_playback_start_ms=558.3
+generation_duration_ms=669.4
+turn_duration_ms=669.4
+```
+
+The desktop default source may still point to the internal digital mic even when
+the headset stereo mic is present. Use `pactl list short sources` and the probe
+scripts to confirm routing before comparing profile results.
 
 ## Current Limits
 

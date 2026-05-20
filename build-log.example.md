@@ -131,3 +131,33 @@ Latency:
 Decision:
 
 - Use `spd-say` as a bridge backend while benchmarking better local TTS options.
+
+## Example Headset Profile Entry
+
+### 2026-05-20
+
+Context:
+
+- `headset-wired` profile against speech/noise loop.
+
+Commands:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode mic-lm-studio \
+  --audio-profile headset-wired \
+  --vad-model models/silero_vad.onnx \
+  --asr-tokens models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
+  --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
+```
+
+Latency:
+
+- `capture_duration_ms=13452.3`
+- `asr_duration_ms=132.8`
+- `turn_to_first_token_ms=405.6`
+- `turn_to_playback_start_ms=558.3`
+
+Decision:
+
+- Keep headset-first product constraint. Continue route-specific tuning.
