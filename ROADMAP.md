@@ -24,6 +24,7 @@ Goal: replace passthrough text turns with one real microphone turn.
 
 - Maintain `docs/latency-budget.md`
 - Maintain `docs/model-matrix.md`
+- Prepare ignored local model storage with `scripts/download_models.py`
 - Run synthetic and LM Studio benchmarks before changing audio backends
 - Install optional audio dependencies
 - Download VAD and ASR model files

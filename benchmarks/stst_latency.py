@@ -12,7 +12,7 @@ from voyce.engine import ConversationEngine
 from voyce.lm_studio import ChatMessage, LmStudioClient
 from voyce.playback import PlaybackSink
 from voyce.telemetry import LatencyTrace
-from voyce.turns import AsrEngine, AudioTurn, PassthroughAsr, TextTurnProducer
+from voyce.turns import AsrEngine, AudioTurn, PassthroughAsr, TextTurnProducer, TurnProducer
 
 
 @dataclass(frozen=True)
@@ -76,13 +76,13 @@ async def run_engine_benchmark(
     llm: Any,
     asr: AsrEngine,
     playback: PlaybackSink,
-    prompt: str,
+    producer: TurnProducer,
 ) -> BenchmarkResult:
     trace = LatencyTrace()
     engine = ConversationEngine(llm=llm, playback=playback, trace=trace, echo_tokens=False)
     await engine.start()
     try:
-        await engine.run_turns(TextTurnProducer([prompt]), asr=asr, max_turns=1)
+        await engine.run_turns(producer, asr=asr, max_turns=1)
     finally:
         await engine.close()
 
@@ -113,7 +113,7 @@ async def run_synthetic(args: argparse.Namespace) -> BenchmarkResult:
         llm=llm,
         asr=asr,
         playback=playback,
-        prompt=args.prompt,
+        producer=TextTurnProducer([args.prompt]),
     )
 
 
@@ -126,7 +126,48 @@ async def run_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
             llm=llm,
             asr=PassthroughAsr(),
             playback=playback,
-            prompt=args.prompt,
+            producer=TextTurnProducer([args.prompt]),
+        )
+
+
+async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
+    from voyce.audio import (
+        MicVadConfig,
+        SherpaOfflineAsr,
+        SherpaOfflineAsrConfig,
+        SileroVadTurnProducer,
+    )
+
+    producer = SileroVadTurnProducer(
+        MicVadConfig(
+            vad_model_path=args.vad_model,
+            min_silence_duration=args.min_silence_duration,
+            max_speech_seconds=args.max_speech_seconds,
+            device=args.audio_device,
+        )
+    )
+    asr = SherpaOfflineAsr(
+        SherpaOfflineAsrConfig(
+            tokens=args.asr_tokens,
+            num_threads=args.asr_threads,
+            sense_voice_model=args.sense_voice_model,
+            moonshine_preprocessor=args.moonshine_preprocessor,
+            moonshine_encoder=args.moonshine_encoder,
+            moonshine_uncached_decoder=args.moonshine_uncached_decoder,
+            moonshine_cached_decoder=args.moonshine_cached_decoder,
+            whisper_encoder=args.whisper_encoder,
+            whisper_decoder=args.whisper_decoder,
+        )
+    )
+    playback = BenchmarkPlaybackSink()
+    lm_config = LmStudioConfig(url=args.url, model=args.model)
+    async with LmStudioClient(lm_config) as llm:
+        return await run_engine_benchmark(
+            name="mic-lm-studio",
+            llm=llm,
+            asr=asr,
+            playback=playback,
+            producer=producer,
         )
 
 
@@ -140,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark Voyce STST latency checkpoints.")
     parser.add_argument(
         "--mode",
-        choices=("synthetic", "lm-studio"),
+        choices=("synthetic", "lm-studio", "mic-lm-studio"),
         default="synthetic",
         help="Benchmark backend to run.",
     )
@@ -152,6 +193,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--url", default=LmStudioConfig.url)
     parser.add_argument("--model", default=LmStudioConfig.model)
+    parser.add_argument("--vad-model", default="models/silero_vad.onnx")
+    parser.add_argument("--asr-tokens", default="")
+    parser.add_argument("--asr-threads", type=int, default=2)
+    parser.add_argument("--sense-voice-model", default="")
+    parser.add_argument("--moonshine-preprocessor", default="")
+    parser.add_argument("--moonshine-encoder", default="")
+    parser.add_argument("--moonshine-uncached-decoder", default="")
+    parser.add_argument("--moonshine-cached-decoder", default="")
+    parser.add_argument("--whisper-encoder", default="")
+    parser.add_argument("--whisper-decoder", default="")
+    parser.add_argument("--min-silence-duration", type=float, default=0.35)
+    parser.add_argument("--max-speech-seconds", type=float, default=30)
+    parser.add_argument("--audio-device", default=None)
 
     parser.add_argument("--asr-ms", type=float, default=120)
     parser.add_argument("--first-token-ms", type=float, default=350)
@@ -166,6 +220,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def async_main(args: argparse.Namespace) -> BenchmarkResult:
+    if args.mode == "mic-lm-studio":
+        return await run_mic_lm_studio(args)
     if args.mode == "lm-studio":
         return await run_lm_studio(args)
     return await run_synthetic(args)

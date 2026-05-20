@@ -54,6 +54,7 @@ The immediate code path is still desktop-first. That keeps the behavior easy to 
 - `build-log.md` is ignored for local experiment notes; start from `build-log.example.md` when useful.
 - `docs/latency-budget.md` defines the STST timing targets.
 - `docs/model-matrix.md` tracks backend candidates before deeper integration.
+- `docs/audio-setup.md` explains the first real microphone benchmark path.
 
 ## Setup
 
@@ -117,3 +118,11 @@ Live LM Studio text-path benchmark:
 ```bash
 PYTHONPATH=src python3 -m benchmarks.stst_latency --mode lm-studio
 ```
+
+Real microphone benchmark setup:
+
+```bash
+python3 scripts/download_models.py
+```
+
+Then see `docs/audio-setup.md`.

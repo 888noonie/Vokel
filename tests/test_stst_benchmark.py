@@ -6,6 +6,7 @@ from benchmarks.stst_latency import (
     ScriptedLlm,
     run_engine_benchmark,
 )
+from voyce.turns import TextTurnProducer
 
 
 class StstBenchmarkTests(unittest.IsolatedAsyncioTestCase):
@@ -15,7 +16,7 @@ class StstBenchmarkTests(unittest.IsolatedAsyncioTestCase):
             llm=ScriptedLlm(["Hello, ", "measured world."], first_token_ms=0, token_gap_ms=0),
             asr=DelayedAsr(delay_ms=0),
             playback=BenchmarkPlaybackSink(first_audio_ms=0),
-            prompt="Hello",
+            producer=TextTurnProducer(["Hello"]),
         )
 
         self.assertEqual(result.name, "test")
