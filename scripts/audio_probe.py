@@ -18,7 +18,9 @@ def probe_device(device: int | str | None, seconds: float, sample_rate: int) -> 
     import sounddevice as sd
 
     frames = max(1, int(seconds * sample_rate))
-    with sd.InputStream(device=device, channels=1, dtype="float32", samplerate=sample_rate) as stream:
+    with sd.InputStream(
+        device=device, channels=1, dtype="float32", samplerate=sample_rate
+    ) as stream:
         data, overflowed = stream.read(frames)
         if overflowed:
             print(f"device={device} overflowed=true")

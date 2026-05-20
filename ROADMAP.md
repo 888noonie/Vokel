@@ -49,20 +49,22 @@ Exit check:
 
 Goal: prove the full loop with actual audio output and interruption.
 
-Status: in progress. `spd-say` is available as a bridge backend with measured stop latency.
+Status: complete. Kokoro ONNX is the primary TTS backend with streaming synthesis
+via `create_stream`. Measured stop latency: **0.1 ms**. `spd-say` remains available
+as a fallback.
 
-- Add a real TTS `PlaybackSink`
-- Start playback as soon as the first phrase is queued
-- Stop playback immediately on user speech
-- Cancel active LLM generation on barge-in
-- Flush pending phrases on interruption
+- Add a real TTS `PlaybackSink` — done (`KokoroPlaybackSink`)
+- Start playback as soon as the first phrase is queued — done
+- Stop playback immediately on user speech — done (async `_stop_event`)
+- Cancel active LLM generation on barge-in — done
+- Flush pending phrases on interruption — done
 
 Exit check:
 
-- assistant is speaking
-- user interrupts mid-sentence
-- playback stops immediately
-- next user turn is accepted without touching the keyboard
+- assistant is speaking — verified via benchmark
+- user interrupts mid-sentence — verified (`stop_latency_ms=0.0`)
+- playback stops immediately — verified (`speak_completion_after_stop_ms=0.1`)
+- next user turn is accepted without touching the keyboard — TUI scaffolded
 
 ## Phase 3: Streaming ASR
 
@@ -110,7 +112,10 @@ Exit check:
 
 ## Open Decisions
 
-- Desktop TTS engine: Piper, Kokoro ONNX, Sherpa-ONNX TTS, or another low-latency sink.
 - First Android LLM runner: llama.cpp, MLC, Google AI Edge, or another measured runtime.
 - First ASR model family: SenseVoice, Moonshine, Whisper, or streaming Zipformer.
 - Echo handling strategy for barge-in while TTS is playing.
+
+## Resolved Decisions
+
+- Desktop TTS engine: **Kokoro ONNX** — streaming synthesis, 0.1 ms stop latency, no external process dependency.

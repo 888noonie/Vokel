@@ -33,6 +33,16 @@ ASSETS = {
         destination=MODELS_DIR / "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
         archive_member_prefix="sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
     ),
+    "kokoro-v1.0": ModelAsset(
+        name="kokoro-v1.0",
+        url="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
+        destination=MODELS_DIR / "kokoro-v1.0.onnx",
+    ),
+    "kokoro-voices": ModelAsset(
+        name="kokoro-voices",
+        url="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
+        destination=MODELS_DIR / "voices-v1.0.bin",
+    ),
 }
 
 
@@ -77,7 +87,6 @@ def build_parser() -> argparse.ArgumentParser:
         "models",
         nargs="*",
         default=None,
-        choices=sorted(ASSETS),
         help="Model assets to download.",
     )
     parser.add_argument("--list", action="store_true", help="List available model assets.")
@@ -92,8 +101,11 @@ def main() -> None:
         return
 
     MODELS_DIR.mkdir(exist_ok=True)
-    model_names = args.models or ["silero-vad", "sense-voice-int8"]
+    model_names = args.models or ["silero-vad", "sense-voice-int8", "kokoro-v1.0", "kokoro-voices"]
     for name in model_names:
+        if name not in ASSETS:
+            print(f"Error: invalid choice: '{name}' (choose from {', '.join(sorted(ASSETS))})")
+            exit(2)
         ensure_asset(ASSETS[name])
 
 

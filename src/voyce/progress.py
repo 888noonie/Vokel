@@ -18,7 +18,7 @@ class NullProgressObserver:
 class ConsoleProgressObserver:
     """Human-readable progress cues for live benchmark runs."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._seen: set[str] = set()
 
     def on_event(self, event: TraceEvent) -> None:

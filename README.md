@@ -66,6 +66,14 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+Or using [uv](https://docs.astral.sh/uv/) (recommended):
+
+```bash
+uv venv .venv
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+```
+
 Optional audio dependencies:
 
 ```bash
@@ -101,10 +109,22 @@ python3 -m voyce.cli "" \
 The microphone path currently uses VAD-bounded turns. Streaming ASR is the next
 step after this first measurable audio producer.
 
+## Interactive Loop (TUI)
+
+Once LM Studio is running and the Kokoro models are downloaded, start an
+interactive multi-turn session:
+
+```bash
+python3 -m voyce.tui
+```
+
+Type a message and press Enter. Type `/exit` to quit.
+The default playback backend is `kokoro` when model files are present.
+
 ## Test
 
 ```bash
-python3 -m unittest discover -s tests
+python3 -m pytest -q
 ```
 
 ## Benchmark
@@ -125,6 +145,7 @@ Playback stop benchmark:
 
 ```bash
 PYTHONPATH=src python3 -m benchmarks.playback_latency --backend spd-say
+PYTHONPATH=src python3 -m benchmarks.playback_latency --backend kokoro
 ```
 
 Audible LM Studio benchmark:

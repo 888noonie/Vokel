@@ -1,9 +1,12 @@
+import sys
 import unittest
+from unittest.mock import Mock, patch
 
 from benchmarks.stst_latency import (
     BenchmarkPlaybackSink,
     DelayedAsr,
     ScriptedLlm,
+    build_parser,
     run_engine_benchmark,
 )
 from voyce.turns import TextTurnProducer
@@ -24,6 +27,25 @@ class StstBenchmarkTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("turn_to_first_token", result.summary_ms)
         self.assertIn("turn_to_playback_start", result.summary_ms)
         self.assertTrue(result.events)
+
+    def test_stst_latency_parser_supports_no_progress(self):
+        args = build_parser().parse_args(["--mode", "synthetic", "--no-progress"])
+        self.assertFalse(args.progress)
+
+    @patch("benchmarks.stst_latency.async_main")
+    def test_main_json_disables_progress(self, mock_async_main):
+        mock_result = Mock()
+        mock_result.to_json.return_value = '{"name":"test"}'
+        mock_async_main.return_value = mock_result
+
+        with patch.object(sys, "argv", ["stst_latency.py", "--mode", "synthetic", "--json"]):
+            with patch("builtins.print") as mock_print:
+                from benchmarks.stst_latency import main
+
+                main()
+
+        self.assertFalse(mock_async_main.call_args.args[0].progress)
+        mock_print.assert_called_with('{"name":"test"}')
 
 
 if __name__ == "__main__":

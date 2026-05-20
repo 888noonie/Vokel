@@ -100,7 +100,7 @@ class SileroVadTurnProducer:
             audio_samples=tuple(float(sample) for sample in samples),
         )
 
-    def _read_next_segment(self):
+    def _read_next_segment(self) -> Any:
         samples_per_read = max(1, int(self.config.read_seconds * self.config.sample_rate))
         max_samples = max(1, int(self.config.max_speech_seconds * self.config.sample_rate))
         captured = self._np.array([], dtype=self._np.float32)
@@ -182,9 +182,9 @@ class SherpaOfflineAsr:
         stream = self._recognizer.create_stream()
         stream.accept_waveform(sample_rate, samples)
         self._recognizer.decode_stream(stream)
-        return stream.result.text.strip()
+        return str(stream.result.text).strip()
 
-    def _create_recognizer(self, sherpa_onnx: Any):
+    def _create_recognizer(self, sherpa_onnx: Any) -> Any:
         self._assert_file(self.config.tokens)
 
         if self.config.sense_voice_model:

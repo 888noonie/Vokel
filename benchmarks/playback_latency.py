@@ -7,10 +7,8 @@ import time
 from dataclasses import dataclass
 
 from voyce.playback import (
-    SpdSayPlaybackSink,
-    SubprocessPlaybackConfig,
-    SubprocessPlaybackSink,
     available_playback_backends,
+    build_playback_sink,
 )
 
 
@@ -31,20 +29,17 @@ class PlaybackBenchmarkResult:
         return json.dumps(self.__dict__, indent=2, sort_keys=True)
 
 
-def build_sink(backend: str):
+def build_sink(backend: str):  # type: ignore[return-value]
+    """Build a playback sink, including the benchmark-only 'fake' backend."""
     if backend == "fake":
+        from voyce.playback import SubprocessPlaybackConfig, SubprocessPlaybackSink
+
         return SubprocessPlaybackSink(
             SubprocessPlaybackConfig(
-                command=(
-                    "python3",
-                    "-c",
-                    "import time; time.sleep(10)",
-                )
+                command=("python3", "-c", "import time; time.sleep(10)")
             )
         )
-    if backend == "spd-say":
-        return SpdSayPlaybackSink()
-    raise ValueError(f"Unknown playback benchmark backend: {backend}")
+    return build_playback_sink(backend)
 
 
 async def run_benchmark(backend: str, interrupt_after_ms: float) -> PlaybackBenchmarkResult:
@@ -69,7 +64,7 @@ async def run_benchmark(backend: str, interrupt_after_ms: float) -> PlaybackBenc
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark playback stop latency.")
-    parser.add_argument("--backend", choices=("fake", "spd-say"), default="fake")
+    parser.add_argument("--backend", choices=available_playback_backends(), default="fake")
     parser.add_argument("--interrupt-after-ms", type=float, default=500)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--list", action="store_true", help="List available playback backends.")

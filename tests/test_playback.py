@@ -13,9 +13,7 @@ from voyce.playback import (
 class PlaybackTests(unittest.IsolatedAsyncioTestCase):
     async def test_subprocess_sink_can_stop_active_process(self):
         sink = SubprocessPlaybackSink(
-            SubprocessPlaybackConfig(
-                command=(sys.executable, "-c", "import time; time.sleep(10)")
-            )
+            SubprocessPlaybackConfig(command=(sys.executable, "-c", "import time; time.sleep(10)"))
         )
 
         task = asyncio.create_task(sink.speak("ignored"))

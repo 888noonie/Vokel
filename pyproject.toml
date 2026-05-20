@@ -17,9 +17,13 @@ audio = [
     "numpy>=1.26",
     "sounddevice>=0.4.6",
     "sherpa-onnx>=1.13.0",
+    "kokoro-onnx>=0.3",
+    "misaki[en]>=0.5",
 ]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.3",
+    "mypy>=1.9",
 ]
 
 [project.scripts]
@@ -30,3 +34,12 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+strict = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

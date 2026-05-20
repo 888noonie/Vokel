@@ -51,7 +51,9 @@ def main() -> None:
     accepted = 0
     segments = 0
     print("Speak now...")
-    with sd.InputStream(device=device, channels=1, dtype="float32", samplerate=args.sample_rate) as stream:
+    with sd.InputStream(
+        device=device, channels=1, dtype="float32", samplerate=args.sample_rate
+    ) as stream:
         while time.monotonic() < deadline:
             frame, _overflowed = stream.read(window_size)
             samples = frame.reshape(-1).astype(np.float32)
@@ -75,9 +77,7 @@ def main() -> None:
                 segment = vad.front
                 segments += 1
                 print(
-                    f"segment={segments} "
-                    f"samples={len(segment.samples)} "
-                    f"start={segment.start}",
+                    f"segment={segments} samples={len(segment.samples)} start={segment.start}",
                     flush=True,
                 )
                 vad.pop()
@@ -86,7 +86,9 @@ def main() -> None:
     while not vad.empty():
         segment = vad.front
         segments += 1
-        print(f"segment={segments} samples={len(segment.samples)} start={segment.start}", flush=True)
+        print(
+            f"segment={segments} samples={len(segment.samples)} start={segment.start}", flush=True
+        )
         vad.pop()
     print(f"segments={segments}")
 

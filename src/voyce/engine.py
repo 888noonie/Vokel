@@ -25,9 +25,7 @@ class ConversationEngine:
         self.config = config or VoiceLoopConfig()
         self.trace = trace or LatencyTrace()
         self.echo_tokens = echo_tokens
-        self.history: list[ChatMessage] = [
-            {"role": "system", "content": self.config.system_prompt}
-        ]
+        self.history: list[ChatMessage] = [{"role": "system", "content": self.config.system_prompt}]
         self._playback_queue: asyncio.Queue[str] = asyncio.Queue()
         self._current_generation: asyncio.Task[None] | None = None
         self._playback_worker: asyncio.Task[None] | None = None

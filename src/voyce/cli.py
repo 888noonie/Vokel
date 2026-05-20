@@ -36,8 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def run(args: argparse.Namespace) -> None:
-    asr = PassthroughAsr()
-    producer = TextTurnProducer([args.prompt])
+    from .turns import AsrEngine, TurnProducer
+    asr: AsrEngine = PassthroughAsr()
+    producer: TurnProducer = TextTurnProducer([args.prompt])
     if args.mic:
         producer = SileroVadTurnProducer(MicVadConfig(vad_model_path=args.vad_model))
         asr = SherpaOfflineAsr(
