@@ -12,14 +12,24 @@ class AudioDependencyError(RuntimeError):
     pass
 
 
+def coerce_audio_device(device: int | str | None) -> int | str | None:
+    if isinstance(device, str) and device.isdigit():
+        return int(device)
+    return device
+
+
 @dataclass(frozen=True)
 class MicVadConfig:
     vad_model_path: str = "models/silero_vad.onnx"
     sample_rate: int = 16_000
     read_seconds: float = 0.1
+    threshold: float = 0.25
     min_silence_duration: float = 0.35
+    min_speech_duration: float = 0.1
     max_speech_seconds: float = 30.0
     vad_buffer_seconds: float = 30.0
+    remove_dc_offset: bool = True
+    input_gain: float = 1.0
     device: int | str | None = None
 
 
@@ -70,7 +80,10 @@ class SileroVadTurnProducer:
 
         vad_config = sherpa_onnx.VadModelConfig()
         vad_config.silero_vad.model = str(model_path)
+        vad_config.silero_vad.threshold = self.config.threshold
         vad_config.silero_vad.min_silence_duration = self.config.min_silence_duration
+        vad_config.silero_vad.min_speech_duration = self.config.min_speech_duration
+        vad_config.silero_vad.max_speech_duration = self.config.max_speech_seconds
         vad_config.sample_rate = self.config.sample_rate
         self._window_size = vad_config.silero_vad.window_size
         self._vad = sherpa_onnx.VoiceActivityDetector(
@@ -98,12 +111,20 @@ class SileroVadTurnProducer:
             "samplerate": self.config.sample_rate,
         }
         if self.config.device is not None:
-            stream_kwargs["device"] = self.config.device
+            stream_kwargs["device"] = coerce_audio_device(self.config.device)
 
         with self._sd.InputStream(**stream_kwargs) as stream:
             while True:
                 frame, _overflowed = stream.read(samples_per_read)
                 samples = frame.reshape(-1).astype(self._np.float32)
+                if self.config.remove_dc_offset:
+                    samples = samples - self._np.mean(samples)
+                if self.config.input_gain != 1.0:
+                    samples = self._np.clip(
+                        samples * self.config.input_gain,
+                        -1.0,
+                        1.0,
+                    ).astype(self._np.float32)
                 self._pending = self._np.concatenate([self._pending, samples])
 
                 while len(self._pending) >= self._window_size:
@@ -111,7 +132,7 @@ class SileroVadTurnProducer:
                     self._pending = self._pending[self._window_size :]
 
                 while not self._vad.empty():
-                    segment = self._vad.front.samples.astype(self._np.float32)
+                    segment = self._np.asarray(self._vad.front.samples, dtype=self._np.float32)
                     self._vad.pop()
                     captured = self._np.concatenate([captured, segment])
                     if len(captured) >= max_samples:

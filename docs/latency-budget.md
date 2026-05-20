@@ -27,6 +27,18 @@ Live LM Studio text-path benchmark:
 PYTHONPATH=src python3 -m benchmarks.stst_latency --mode lm-studio
 ```
 
+Mic + LM Studio benchmark:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode mic-lm-studio \
+  --audio-device 8 \
+  --input-gain 4 \
+  --vad-model models/silero_vad.onnx \
+  --asr-tokens models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
+  --sense-voice-model models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
+```
+
 Full JSON trace:
 
 ```bash

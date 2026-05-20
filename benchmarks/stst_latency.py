@@ -141,8 +141,12 @@ async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
     producer = SileroVadTurnProducer(
         MicVadConfig(
             vad_model_path=args.vad_model,
+            threshold=args.vad_threshold,
             min_silence_duration=args.min_silence_duration,
+            min_speech_duration=args.min_speech_duration,
             max_speech_seconds=args.max_speech_seconds,
+            remove_dc_offset=not args.keep_dc_offset,
+            input_gain=args.input_gain,
             device=args.audio_device,
         )
     )
@@ -203,8 +207,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--moonshine-cached-decoder", default="")
     parser.add_argument("--whisper-encoder", default="")
     parser.add_argument("--whisper-decoder", default="")
+    parser.add_argument("--vad-threshold", type=float, default=0.25)
     parser.add_argument("--min-silence-duration", type=float, default=0.35)
+    parser.add_argument("--min-speech-duration", type=float, default=0.1)
     parser.add_argument("--max-speech-seconds", type=float, default=30)
+    parser.add_argument("--keep-dc-offset", action="store_true")
+    parser.add_argument("--input-gain", type=float, default=1.0)
     parser.add_argument("--audio-device", default=None)
 
     parser.add_argument("--asr-ms", type=float, default=120)

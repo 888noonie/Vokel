@@ -5,6 +5,7 @@ from voyce.audio import (
     MicVadConfig,
     SherpaOfflineAsrConfig,
     SileroVadTurnProducer,
+    coerce_audio_device,
     _require_audio_dependencies,
 )
 
@@ -25,6 +26,11 @@ class AudioTests(unittest.TestCase):
 
         self.assertEqual(config.tokens, "tokens.txt")
         self.assertEqual(config.provider, "cpu")
+
+    def test_coerce_audio_device_accepts_numeric_strings(self):
+        self.assertEqual(coerce_audio_device("8"), 8)
+        self.assertEqual(coerce_audio_device("pulse"), "pulse")
+        self.assertIsNone(coerce_audio_device(None))
 
 
 if __name__ == "__main__":

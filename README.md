@@ -126,3 +126,10 @@ python3 scripts/download_models.py
 ```
 
 Then see `docs/audio-setup.md`.
+
+Latest local mic benchmark result:
+
+```text
+turn_to_first_token_ms=368.7
+turn_to_playback_start_ms=674.6
+```
