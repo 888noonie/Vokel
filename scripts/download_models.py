@@ -33,6 +33,15 @@ ASSETS = {
         destination=MODELS_DIR / "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
         archive_member_prefix="sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
     ),
+    "streaming-zipformer-en": ModelAsset(
+        name="streaming-zipformer-en",
+        url=(
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+            "sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2"
+        ),
+        destination=MODELS_DIR / "sherpa-onnx-streaming-zipformer-en-2023-06-26",
+        archive_member_prefix="sherpa-onnx-streaming-zipformer-en-2023-06-26",
+    ),
     "kokoro-v1.0": ModelAsset(
         name="kokoro-v1.0",
         url="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
