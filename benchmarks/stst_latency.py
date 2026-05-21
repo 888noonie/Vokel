@@ -40,7 +40,7 @@ class DelayedAsr:
 
     async def transcribe(self, turn: AudioTurn) -> str:
         await asyncio.sleep(self.delay_s)
-        return turn.text
+        return str(turn.text)
 
 
 class ScriptedLlm:
@@ -79,9 +79,11 @@ async def run_engine_benchmark(
     playback: PlaybackSink,
     producer: TurnProducer,
     progress: bool = False,
+    trace: LatencyTrace | None = None,
 ) -> BenchmarkResult:
-    trace = LatencyTrace()
-    if progress:
+    own_trace = trace is None
+    trace = trace or LatencyTrace()
+    if progress and own_trace:
         trace.add_observer(ConsoleProgressObserver())
     engine = ConversationEngine(llm=llm, playback=playback, trace=trace, echo_tokens=False)
     await engine.start()
@@ -136,13 +138,8 @@ async def run_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
         )
 
 
-async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
-    from voyce.audio import (
-        MicVadConfig,
-        SherpaOfflineAsr,
-        SherpaOfflineAsrConfig,
-        SileroVadTurnProducer,
-    )
+def _stst_profile_mic_config(args: argparse.Namespace) -> Any | None:
+    """Resolve optional audio profile and enforce route guard when requested."""
     from voyce.audio_profiles import get_audio_profile
     from voyce.audio_routes import find_source, load_pulse_sources
 
@@ -162,45 +159,57 @@ async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
                 f"Profile source is not default: {source.description}. "
                 "Run scripts/audio_routes.py for diagnostics."
             )
-    producer = SileroVadTurnProducer(
-        MicVadConfig(
-            vad_model_path=args.vad_model,
-            sample_rate=profile_config.sample_rate if profile_config else 16_000,
-            read_seconds=profile_config.read_seconds if profile_config else 0.1,
-            threshold=args.vad_threshold
-            if args.vad_threshold is not None
-            else profile_config.threshold
-            if profile_config
-            else 0.25,
-            min_silence_duration=args.min_silence_duration
-            if args.min_silence_duration is not None
-            else profile_config.min_silence_duration
-            if profile_config
-            else 0.35,
-            min_speech_duration=args.min_speech_duration
-            if args.min_speech_duration is not None
-            else profile_config.min_speech_duration
-            if profile_config
-            else 0.1,
-            max_speech_seconds=args.max_speech_seconds
-            if args.max_speech_seconds is not None
-            else profile_config.max_speech_seconds
-            if profile_config
-            else 30,
-            vad_buffer_seconds=profile_config.vad_buffer_seconds if profile_config else 30,
-            remove_dc_offset=not args.keep_dc_offset,
-            input_gain=args.input_gain
-            if args.input_gain is not None
-            else profile_config.input_gain
-            if profile_config
-            else 1.0,
-            device=args.audio_device
-            if args.audio_device is not None
-            else profile_config.device
-            if profile_config
-            else None,
-        )
+    return profile_config
+
+
+def mic_vad_config_for_stst_mic(args: argparse.Namespace, profile_mic: Any | None) -> Any:
+    """Shared MicVadConfig for VAD-bounded and streaming desktop mic benchmarks."""
+    from voyce.audio import MicVadConfig
+
+    return MicVadConfig(
+        vad_model_path=args.vad_model,
+        sample_rate=profile_mic.sample_rate if profile_mic else 16_000,
+        read_seconds=profile_mic.read_seconds if profile_mic else 0.1,
+        threshold=args.vad_threshold
+        if args.vad_threshold is not None
+        else profile_mic.threshold
+        if profile_mic
+        else 0.25,
+        min_silence_duration=args.min_silence_duration
+        if args.min_silence_duration is not None
+        else profile_mic.min_silence_duration
+        if profile_mic
+        else 0.35,
+        min_speech_duration=args.min_speech_duration
+        if args.min_speech_duration is not None
+        else profile_mic.min_speech_duration
+        if profile_mic
+        else 0.1,
+        max_speech_seconds=args.max_speech_seconds
+        if args.max_speech_seconds is not None
+        else profile_mic.max_speech_seconds
+        if profile_mic
+        else 30,
+        vad_buffer_seconds=profile_mic.vad_buffer_seconds if profile_mic else 30,
+        remove_dc_offset=not args.keep_dc_offset,
+        input_gain=args.input_gain
+        if args.input_gain is not None
+        else profile_mic.input_gain
+        if profile_mic
+        else 1.0,
+        device=args.audio_device
+        if args.audio_device is not None
+        else profile_mic.device
+        if profile_mic
+        else None,
     )
+
+
+async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
+    from voyce.audio import SherpaOfflineAsr, SherpaOfflineAsrConfig, SileroVadTurnProducer
+
+    profile_config = _stst_profile_mic_config(args)
+    producer = SileroVadTurnProducer(mic_vad_config_for_stst_mic(args, profile_config))
     asr = SherpaOfflineAsr(
         SherpaOfflineAsrConfig(
             tokens=args.asr_tokens,
@@ -227,6 +236,32 @@ async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
         )
 
 
+async def run_mic_streaming_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
+    """One turn: streaming Zipformer endpointing + async mic; same engine loop as Phase 1."""
+    from voyce.audio import AsynchronousMicStream, StreamingTurnProducer, create_streaming_asr
+
+    profile_config = _stst_profile_mic_config(args)
+    mic_cfg = mic_vad_config_for_stst_mic(args, profile_config)
+    mic = AsynchronousMicStream(mic_cfg)
+    online_asr = create_streaming_asr(args.streaming_asr_dir, provider=args.asr_provider)
+    trace = LatencyTrace()
+    if args.progress:
+        trace.add_observer(ConsoleProgressObserver())
+    producer = StreamingTurnProducer(mic, online_asr, trace)
+    playback = build_playback_sink(args.playback) if args.playback else BenchmarkPlaybackSink()
+    lm_config = LmStudioConfig(url=args.url, model=args.model)
+    async with LmStudioClient(lm_config) as llm:
+        return await run_engine_benchmark(
+            name="mic-streaming-lm-studio",
+            llm=llm,
+            asr=online_asr,
+            playback=playback,
+            producer=producer,
+            progress=False,
+            trace=trace,
+        )
+
+
 def print_table(result: BenchmarkResult) -> None:
     print(f"benchmark={result.name}")
     for name, value in result.summary_ms.items():
@@ -237,7 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark Voyce STST latency checkpoints.")
     parser.add_argument(
         "--mode",
-        choices=("synthetic", "lm-studio", "mic-lm-studio"),
+        choices=("synthetic", "lm-studio", "mic-lm-studio", "mic-streaming-lm-studio"),
         default="synthetic",
         help="Benchmark backend to run.",
     )
@@ -294,6 +329,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-dc-offset", action="store_true")
     parser.add_argument("--input-gain", type=float, default=None)
     parser.add_argument("--audio-device", default=None)
+    parser.add_argument(
+        "--streaming-asr-dir",
+        default="models/sherpa-onnx-streaming-zipformer-en-2023-06-26",
+        help="Sherpa-ONNX streaming Zipformer model directory (mic-streaming-lm-studio mode).",
+    )
+    parser.add_argument(
+        "--asr-provider",
+        default="cpu",
+        help="Sherpa-ONNX execution provider for streaming Zipformer (e.g. cpu, cuda).",
+    )
 
     parser.add_argument("--asr-ms", type=float, default=120)
     parser.add_argument("--first-token-ms", type=float, default=350)
@@ -308,6 +353,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def async_main(args: argparse.Namespace) -> BenchmarkResult:
+    if args.mode == "mic-streaming-lm-studio":
+        return await run_mic_streaming_lm_studio(args)
     if args.mode == "mic-lm-studio":
         return await run_mic_lm_studio(args)
     if args.mode == "lm-studio":

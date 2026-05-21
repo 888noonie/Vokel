@@ -10,7 +10,10 @@ class DownloadModelsTests(unittest.TestCase):
         self.assertTrue(args.list)
         self.assertEqual(args.models, [])
 
-    def test_known_assets_are_registered(self):
+    def test_streaming_zipformer_asset_registered(self) -> None:
+        self.assertIn("streaming-zipformer-en", ASSETS)
+
+    def test_known_assets_are_registered(self) -> None:
         self.assertIn("silero-vad", ASSETS)
         self.assertIn("sense-voice-int8", ASSETS)
 

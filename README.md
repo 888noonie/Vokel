@@ -106,8 +106,17 @@ python3 -m voyce.cli "" \
   --sense-voice-model models/sense-voice/model.onnx
 ```
 
-The microphone path currently uses VAD-bounded turns. Streaming ASR is the next
-step after this first measurable audio producer.
+By default, `--mic` uses VAD-bounded turns with **offline** SenseVoice transcription.
+For **streaming** Zipformer ASR (Phase 3 path), download the streaming asset
+(`python3 scripts/download_models.py` includes `streaming-zipformer-en`) and pass
+the model directory:
+
+```bash
+python3 -m voyce.cli "" \
+  --mic \
+  --vad-model models/silero_vad.onnx \
+  --streaming-asr-dir models/sherpa-onnx-streaming-zipformer-en-2023-06-26
+```
 
 ## Interactive Loop (TUI)
 
@@ -168,6 +177,17 @@ Recommended dev profile:
 PYTHONPATH=src python3 -m benchmarks.stst_latency \
   --mode mic-lm-studio \
   --audio-profile laptop-mic-headphones \
+  --playback spd-say
+```
+
+Streaming Zipformer mic benchmark (same LM Studio server; uses `AsynchronousMicStream`
++ online recognizer):
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode mic-streaming-lm-studio \
+  --audio-profile laptop-mic-headphones \
+  --streaming-asr-dir models/sherpa-onnx-streaming-zipformer-en-2023-06-26 \
   --playback spd-say
 ```
 

@@ -70,14 +70,21 @@ Exit check:
 
 Goal: reduce the waiting period after speech ends.
 
-- Add a streaming ASR adapter behind the existing `AsrEngine` boundary
-- Track partial transcript timing separately from final transcript timing
-- Decide when partial text is stable enough to start retrieval or LLM prefill
+Status: complete (locked). Sherpa-ONNX streaming Zipformer is integrated on the
+desktop path: `create_streaming_asr` + `StreamingTurnProducer`, shared `LatencyTrace`
+with `ConversationEngine`, CLI `--mic --streaming-asr-dir`, benchmark mode
+`mic-streaming-lm-studio`, and `streaming-zipformer-en` in `scripts/download_models.py`.
+
+- Add a streaming ASR adapter behind the existing `AsrEngine` boundary — done
+- Track partial transcript timing separately from final transcript timing — baseline
+  in telemetry; further tuning as needed
+- Decide when partial text is stable enough to start retrieval or LLM prefill — future
+  overlap work; Phase 4 memory may drive this
 
 Exit check:
 
-- transcript appears incrementally
-- first-token latency improves or the added complexity is rejected
+- transcript path works end-to-end with streaming models — verified (CLI + benchmark)
+- first-token latency can be compared against offline mic path — benchmark + scoreboard
 
 ## Phase 4: Memory
 

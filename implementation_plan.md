@@ -1,5 +1,9 @@
 # Phase 3 Implementation Plan
 
+**Status:** implemented and locked in (see `ROADMAP.md` Phase 3). This document
+remains the design record; verification steps still apply when changing the
+streaming path.
+
 This plan updates the earlier streaming-ASR sketch so it stays aligned with the
 current Voyce architecture, `AGENTS.md`, and the Phase 3 exit criteria in
 `ROADMAP.md`.

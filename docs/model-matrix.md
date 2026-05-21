@@ -9,7 +9,7 @@ This file tracks candidates before we commit deeper integration work.
 | Sherpa-ONNX Silero VAD | VAD | Existing Python and Android path. | Scaffolded in `src/voyce/audio.py`. |
 | Sherpa-ONNX SenseVoice | ASR | Good offline multilingual candidate. | Adapter scaffolded. Needs model files. |
 | Sherpa-ONNX Moonshine | ASR | Interesting low-latency edge direction. | Adapter scaffolded. Needs measurement. |
-| Streaming Zipformer | ASR | True streaming ASR path through Sherpa. | Future adapter. |
+| Streaming Zipformer | ASR | True streaming ASR path through Sherpa. | Integrated: `create_streaming_asr`, CLI `--streaming-asr-dir`, `mic-streaming-lm-studio` benchmark. |
 | Whisper | ASR | Strong baseline, likely slower for live turns. | Adapter scaffolded for comparison. |
 
 ## TTS

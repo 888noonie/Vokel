@@ -2,7 +2,11 @@
 
 This guide prepares the first measurable desktop speech path:
 
-`microphone -> Silero VAD -> SenseVoice ASR -> LM Studio -> phrase playback sink`
+`microphone -> Silero VAD -> SenseVoice ASR (offline) -> LM Studio -> phrase playback sink`
+
+For **streaming** ASR (Phase 3), the ASR stage is Sherpa streaming Zipformer instead
+of SenseVoice; see [Streaming Zipformer mic benchmark](#streaming-zipformer-mic-benchmark)
+below.
 
 ## System Dependencies
 
@@ -31,11 +35,12 @@ Model weights are stored under `models/`, which is ignored by Git.
 python3 scripts/download_models.py
 ```
 
-This downloads:
+This downloads (among others):
 
 - `models/silero_vad.onnx`
 - `models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx`
 - `models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt`
+- `models/sherpa-onnx-streaming-zipformer-en-2023-06-26/` (streaming Zipformer, Phase 3)
 
 Sources:
 
@@ -65,6 +70,23 @@ Start the test clip only after this cue appears:
 ```
 
 Use `--no-progress` for machine-readable or unattended runs.
+
+## Streaming Zipformer mic benchmark
+
+After the default download (includes the streaming Zipformer directory), you can
+measure the online recognizer path:
+
+```bash
+PYTHONPATH=src python3 -m benchmarks.stst_latency \
+  --mode mic-streaming-lm-studio \
+  --audio-profile laptop-mic-headphones \
+  --vad-model models/silero_vad.onnx \
+  --streaming-asr-dir models/sherpa-onnx-streaming-zipformer-en-2023-06-26 \
+  --playback spd-say
+```
+
+The CLI accepts the same `--streaming-asr-dir` with `--mic` for interactive runs;
+see `README.md`.
 
 ## Audio Profiles
 
@@ -237,6 +259,8 @@ also shows why phrase-boundary tuning matters: first playback crossed the
 
 ## Current Limits
 
-- This first mic path is VAD-bounded, not true streaming ASR.
+- Offline mic path (`mic-lm-studio`) is VAD-bounded batch ASR on each completed turn.
+- Streaming Zipformer (`mic-streaming-lm-studio` / `--streaming-asr-dir`) is the
+  integrated Phase 3 path; partial-to-LLM overlap is still future work.
 - Playback is still a benchmark sink, not real TTS audio.
 - Barge-in measurement starts after real playback exists.

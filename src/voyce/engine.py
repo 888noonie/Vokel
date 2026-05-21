@@ -82,7 +82,7 @@ class ConversationEngine:
             )
             self.trace.mark("asr_started", has_audio=turn.has_audio)
             transcript = await asr.transcribe(turn)
-            self.trace.mark("asr_finished", chars=len(transcript))
+            self.trace.mark("asr_finished", chars=len(transcript), text=transcript)
             if transcript.strip():
                 await self.submit_turn(transcript, reset_trace=False)
                 await self.wait_for_playback()
@@ -131,7 +131,7 @@ class ConversationEngine:
             if reply:
                 self.history.append({"role": "assistant", "content": reply})
                 self._trim_history()
-            self.trace.mark("generation_finished", chars=len(reply))
+            self.trace.mark("generation_finished", chars=len(reply), text=reply)
         except asyncio.CancelledError:
             chunker.reset()
             self.trace.mark("generation_cancelled")
