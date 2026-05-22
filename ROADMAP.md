@@ -90,16 +90,23 @@ Exit check:
 
 Goal: add useful local context without slowing the voice loop.
 
-- SQLite conversation store
-- Lightweight retrieval path
-- Explicit privacy boundary
-- Latency budget for memory injection
+Status: complete (locked first slice). Conversation Recall is opt-in, stored
+under ignored `data/`, runs behind a small `MemoryStore` interface, and records
+retrieval/write timings in the same `LatencyTrace` as the voice loop. Saved
+notes can be seeded with `--remember` so high-signal preferences help the local
+model without an extra summarization call.
+
+- Local conversation store — first SQLite implementation added
+- Lightweight retrieval path — recent-scored recall, bounded snippets, saved-note priority
+- Explicit privacy boundary — disabled by default; `--memory` / dashboard toggle
+- Latency budget for memory injection — `memory_retrieval_ms`, `memory_write_ms`,
+  and `memory_to_first_token_ms`
 
 Exit check:
 
-- memory can be disabled
-- memory timing is visible in telemetry
-- no blocking disk path sits inside audio callbacks
+- memory can be disabled — default behavior, dashboard toggle, and CLI flag
+- memory timing is visible in telemetry — done
+- no blocking disk path sits inside audio callbacks — SQLite work is offloaded
 
 ## Phase 5: Android Port
 

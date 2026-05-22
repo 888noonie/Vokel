@@ -5,6 +5,7 @@ from contextlib import suppress
 
 from .config import VoiceLoopConfig
 from .lm_studio import ChatMessage, LmStudioClient
+from .memory import MemoryConfig, MemoryStore, NullMemoryStore, build_memory_context
 from .playback import PlaybackSink
 from .telemetry import LatencyTrace
 from .text_chunker import PhraseChunker
@@ -19,12 +20,16 @@ class ConversationEngine:
         config: VoiceLoopConfig | None = None,
         trace: LatencyTrace | None = None,
         echo_tokens: bool = True,
+        memory_store: MemoryStore | None = None,
+        memory_config: MemoryConfig | None = None,
     ):
         self.llm = llm
         self.playback = playback
         self.config = config or VoiceLoopConfig()
         self.trace = trace or LatencyTrace()
         self.echo_tokens = echo_tokens
+        self.memory_config = memory_config or MemoryConfig()
+        self.memory_store = memory_store or NullMemoryStore()
         self.history: list[ChatMessage] = [{"role": "system", "content": self.config.system_prompt}]
         self._playback_queue: asyncio.Queue[str] = asyncio.Queue()
         self._current_generation: asyncio.Task[None] | None = None
@@ -40,6 +45,7 @@ class ConversationEngine:
             self._playback_worker.cancel()
             with suppress(asyncio.CancelledError):
                 await self._playback_worker
+        await self.memory_store.close()
 
     async def wait_for_playback(self) -> None:
         await self._playback_queue.join()
@@ -49,9 +55,10 @@ class ConversationEngine:
         if reset_trace:
             self.trace.reset()
         self.trace.mark("turn_submitted", chars=len(user_text))
+        memory_context = await self._retrieve_memory_context(user_text)
         self.history.append({"role": "user", "content": user_text})
         self._trim_history()
-        self._current_generation = asyncio.create_task(self._generate_reply())
+        self._current_generation = asyncio.create_task(self._generate_reply(user_text, memory_context))
         await self._current_generation
 
     async def run_turns(
@@ -99,7 +106,7 @@ class ConversationEngine:
         await self.playback.stop()
         self.trace.mark("playback_stop_requested")
 
-    async def _generate_reply(self) -> None:
+    async def _generate_reply(self, user_text: str, memory_context: str = "") -> None:
         chunker = PhraseChunker()
         assistant_text: list[str] = []
         saw_token = False
@@ -108,7 +115,7 @@ class ConversationEngine:
         self.trace.mark("generation_started")
 
         try:
-            async for token in self.llm.stream_chat(self.history):
+            async for token in self.llm.stream_chat(self._messages_for_generation(memory_context)):
                 if not saw_token:
                     self.trace.mark("first_token")
                     saw_token = True
@@ -132,6 +139,8 @@ class ConversationEngine:
                 self.history.append({"role": "assistant", "content": reply})
                 self._trim_history()
             self.trace.mark("generation_finished", chars=len(reply), text=reply)
+            if reply:
+                await self._record_memory_turn(user_text, reply)
         except asyncio.CancelledError:
             chunker.reset()
             self.trace.mark("generation_cancelled")
@@ -162,3 +171,38 @@ class ConversationEngine:
         system = self.history[:1]
         recent = self.history[-(max_messages - 1) :]
         self.history = system + recent
+
+    async def _retrieve_memory_context(self, user_text: str) -> str:
+        if not self.memory_config.enabled:
+            return ""
+        self.trace.mark("memory_retrieval_started")
+        try:
+            entries = await self.memory_store.retrieve(user_text, self.memory_config.max_results)
+            context = build_memory_context(entries, self.memory_config.max_context_chars)
+            self.trace.mark(
+                "memory_retrieval_finished",
+                entries=len(entries),
+                chars=len(context),
+            )
+            return context
+        except Exception as exc:
+            self.trace.mark("memory_retrieval_failed", error=str(exc))
+            return ""
+
+    async def _record_memory_turn(self, user_text: str, assistant_text: str) -> None:
+        if not self.memory_config.enabled:
+            return
+        self.trace.mark("memory_write_started", chars=len(user_text) + len(assistant_text))
+        try:
+            await self.memory_store.record_turn(user_text, assistant_text)
+            self.trace.mark("memory_write_finished")
+        except Exception as exc:
+            self.trace.mark("memory_write_failed", error=str(exc))
+
+    def _messages_for_generation(self, memory_context: str) -> list[ChatMessage]:
+        if not memory_context:
+            return list(self.history)
+        system = self.history[:1]
+        rest = self.history[1:]
+        memory_message: ChatMessage = {"role": "system", "content": memory_context}
+        return system + [memory_message] + rest

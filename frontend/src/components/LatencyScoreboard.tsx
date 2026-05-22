@@ -24,8 +24,8 @@ export const LatencyScoreboard: React.FC<LatencyScoreboardProps> = ({ metrics })
   };
 
   return (
-    <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl p-6 backdrop-blur">
-      <h2 className="text-xl font-semibold text-zinc-100 mb-4 flex items-center justify-between">
+    <div className="voyce-panel rounded-3xl p-5 sm:p-6">
+      <h2 className="text-lg sm:text-xl font-semibold text-zinc-100 mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <span>Latency Scoreboard</span>
         <span className="text-xs font-normal text-zinc-500">Targets from docs/latency-budget.md</span>
       </h2>
@@ -37,13 +37,13 @@ export const LatencyScoreboard: React.FC<LatencyScoreboardProps> = ({ metrics })
           return (
             <div
               key={key}
-              className={`border rounded-xl p-4 transition-all duration-300 ${
+              className={`border rounded-2xl p-4 transition-all duration-300 ${
                 hasValue ? getStatusColor(key, value) : "border-zinc-800 bg-zinc-900/30 text-zinc-500"
               }`}
             >
-              <div className="flex justify-between items-start mb-1">
+              <div className="flex justify-between items-start gap-3 mb-1">
                 <span className="text-sm font-medium text-zinc-300">{budget.label}</span>
-                <span className="text-xs opacity-60">Target: &lt;{budget.target}ms</span>
+                <span className="text-[11px] opacity-60 whitespace-nowrap">Target: &lt;{budget.target}ms</span>
               </div>
               <div className="text-2xl font-bold font-mono tracking-tight my-1">
                 {hasValue ? `${value.toFixed(1)} ms` : "--"}

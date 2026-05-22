@@ -1,1 +1,126 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --voyce-bg: #050509;
+  --voyce-panel: rgba(24, 24, 31, 0.78);
+  --voyce-panel-strong: rgba(14, 14, 19, 0.92);
+  --voyce-border: rgba(161, 161, 170, 0.14);
+  --voyce-border-strong: rgba(216, 180, 254, 0.3);
+  --voyce-text-soft: #a1a1aa;
+  --voyce-purple: #a855f7;
+  --voyce-violet: #7c3aed;
+  --voyce-glow: 0 24px 80px rgba(124, 58, 237, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(124, 58, 237, 0.24), transparent 32rem),
+    radial-gradient(circle at 78% 0%, rgba(59, 130, 246, 0.12), transparent 30rem),
+    var(--voyce-bg);
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select {
+  min-height: 44px;
+}
+
+.app-shell {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.028), transparent 36%),
+    radial-gradient(circle at 50% 100%, rgba(168, 85, 247, 0.08), transparent 36rem);
+}
+
+.safe-container {
+  width: min(100% - clamp(1rem, 4vw, 3rem), 1180px);
+  margin-inline: auto;
+}
+
+.voyce-panel {
+  border: 1px solid var(--voyce-border);
+  background: linear-gradient(180deg, rgba(39, 39, 48, 0.78), var(--voyce-panel));
+  box-shadow: var(--voyce-glow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(18px);
+}
+
+.voyce-panel-subtle {
+  border: 1px solid rgba(161, 161, 170, 0.1);
+  background: var(--voyce-panel-strong);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.voyce-field {
+  width: 100%;
+  border: 1px solid var(--voyce-border);
+  border-radius: 0.9rem;
+  background: rgba(5, 5, 9, 0.72);
+  color: #d4d4d8;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  padding: 0.6rem 0.75rem;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.voyce-field:focus {
+  border-color: var(--voyce-border-strong);
+  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.12);
+}
+
+.voyce-field:disabled {
+  opacity: 0.55;
+}
+
+.touch-button {
+  min-height: 46px;
+  transform: translateZ(0);
+}
+
+.touch-button:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.recall-switch {
+  width: 3.2rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--voyce-border);
+  background: rgba(63, 63, 70, 0.72);
+  padding: 0.18rem;
+  transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.recall-switch[data-enabled="true"] {
+  border-color: rgba(168, 85, 247, 0.5);
+  background: linear-gradient(90deg, var(--voyce-violet), var(--voyce-purple));
+  box-shadow: 0 0 26px rgba(168, 85, 247, 0.24);
+}
+
+.recall-knob {
+  display: block;
+  width: 1.32rem;
+  height: 1.32rem;
+  border-radius: 999px;
+  background: #f4f4f5;
+  transition: transform 180ms ease;
+}
+
+.recall-switch[data-enabled="true"] .recall-knob {
+  transform: translateX(1.42rem);
+}
+
+@media (max-width: 640px) {
+  button,
+  input,
+  select {
+    min-height: 48px;
+  }
+}

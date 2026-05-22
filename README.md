@@ -39,6 +39,22 @@ Voyce measures the points that decide whether the loop feels alive:
 
 The current CLI uses a passthrough ASR producer so the async LLM and phrase playback path can be measured before microphone capture is introduced.
 
+## Conversation Recall
+
+Recall is explicit, local, and off by default. When enabled, Voyce can use saved
+notes and recent completed turns from this machine. Timing is still visible as
+`memory_retrieval_ms` / `memory_write_ms`, so recall does not quietly tax the
+live loop.
+
+```bash
+python3 -m voyce.cli "What did we decide last time?" --memory
+python3 -m voyce.cli --remember "Avoid Bluetooth output for latency benchmarks."
+```
+
+The web dashboard exposes the same opt-in toggle for browser and local sessions.
+The engine talks to a small memory interface rather than SQLite directly, which
+keeps the Android port free to use its native SQLite layer later.
+
 ## Research Direction
 
 Current latency work points toward three production choices:
@@ -55,6 +71,7 @@ The immediate code path is still desktop-first. That keeps the behavior easy to 
 - `ROADMAP.md` tracks measured milestones and open technical decisions.
 - `build-log.md` is ignored for local experiment notes; start from `build-log.example.md` when useful.
 - `docs/latency-budget.md` defines the STST timing targets.
+- `docs/memory.md` explains the opt-in recall path and timing budget.
 - `docs/model-matrix.md` tracks backend candidates before deeper integration.
 - `docs/audio-setup.md` explains the first real microphone benchmark path.
 

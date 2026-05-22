@@ -24,8 +24,8 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
   }, [messages, status]);
 
   return (
-    <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl p-6 flex flex-col h-[400px] backdrop-blur">
-      <h2 className="text-xl font-semibold text-zinc-100 mb-4 flex items-center justify-between border-b border-zinc-800 pb-3">
+    <div className="voyce-panel rounded-3xl p-5 sm:p-6 flex flex-col min-h-[360px] h-[52vh] max-h-[560px]">
+      <h2 className="text-lg sm:text-xl font-semibold text-zinc-100 mb-4 flex items-center justify-between border-b border-white/10 pb-3">
         <span>Live Transcript</span>
         <span className="text-xs bg-zinc-800 text-zinc-400 px-2 py-1 rounded-md font-mono uppercase">
           {messages.length} Turn{messages.length !== 1 ? "s" : ""}
@@ -37,9 +37,9 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
         className="flex-1 overflow-y-auto space-y-4 pr-2 scroll-smooth"
       >
         {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-zinc-500 text-sm select-none">
+          <div className="h-full flex flex-col items-center justify-center text-zinc-500 text-sm select-none text-center px-4">
             <Volume2 className="w-12 h-12 mb-3 stroke-[1.5] animate-pulse text-zinc-600" />
-            <p>Ready to converse. Start speaking or click start!</p>
+            <p>Ready to converse. Start speaking or press Start.</p>
           </div>
         ) : (
           messages.map((msg) => {
@@ -48,7 +48,7 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
             return (
               <div
                 key={msg.id}
-                className={`flex gap-3 max-w-[85%] ${isUser ? "ml-auto flex-row-reverse" : "mr-auto"}`}
+                className={`flex gap-3 max-w-[92%] sm:max-w-[85%] ${isUser ? "ml-auto flex-row-reverse" : "mr-auto"}`}
               >
                 <div
                   className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 border ${
@@ -61,7 +61,7 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
                 </div>
 
                 <div
-                  className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+                  className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
                     isUser
                       ? msg.isPartial
                         ? "bg-zinc-850/60 text-zinc-400 border border-dashed border-zinc-700 font-sans"

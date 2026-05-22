@@ -22,6 +22,7 @@ from .audio import (
 from .config import LmStudioConfig
 from .engine import ConversationEngine
 from .lm_studio import LmStudioClient
+from .memory import MemoryConfig, SQLiteMemoryStore
 from .playback import KokoroPlaybackSink, SpdSayPlaybackSink, ConsolePlaybackSink, PlaybackSink
 from .telemetry import LatencyTrace, TraceEvent
 
@@ -153,6 +154,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     session_mode = data.get("mode", "local")
                     url = data.get("url", LmStudioConfig.url)
                     model = data.get("model", LmStudioConfig.model)
+                    memory_config = MemoryConfig(
+                        enabled=bool(data.get("memory", False)),
+                        path=Path(str(data.get("memory_db", MemoryConfig.path))),
+                        max_results=int(data.get("memory_results", MemoryConfig.max_results)),
+                    )
+                    memory_store = (
+                        SQLiteMemoryStore(memory_config.path, scan_limit=memory_config.scan_limit)
+                        if memory_config.enabled
+                        else None
+                    )
 
                     lm_config = LmStudioConfig(url=url, model=model)
                     llm_client = LmStudioClient(lm_config)
@@ -202,6 +213,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             playback=playback,
                             trace=trace,
                             echo_tokens=False,
+                            memory_store=memory_store,
+                            memory_config=memory_config,
                         )
                         await engine.start()
 
@@ -239,6 +252,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             playback=web_playback,
                             trace=trace,
                             echo_tokens=False,
+                            memory_store=memory_store,
+                            memory_config=memory_config,
                         )
                         await engine.start()
 
