@@ -750,19 +750,35 @@ function App() {
                 <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
                   Kokoro Voice
                 </label>
-                <select
-                  disabled={isSessionActive || playbackBackend !== "kokoro"}
-                  value={voice}
-                  onChange={(e) => setVoice(e.target.value)}
-                  className="voyce-field"
-                >
-                  {kokoroVoices.map((voiceName) => (
-                    <option key={voiceName} value={voiceName}>
-                      {voiceName}
-                    </option>
-                  ))}
-                </select>
-                <div className="mt-3 max-h-44 overflow-y-auto rounded-2xl border border-zinc-850 bg-zinc-950/50 p-2">
+                <div className="flex gap-2">
+                  <select
+                    disabled={isSessionActive || playbackBackend !== "kokoro"}
+                    value={voice}
+                    onChange={(e) => setVoice(e.target.value)}
+                    className="voyce-field"
+                  >
+                    {kokoroVoices.map((voiceName) => (
+                      <option key={voiceName} value={voiceName}>
+                        {voiceName}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!isConnected || isSessionActive || playbackBackend !== "kokoro"}
+                    onClick={() => handlePreviewVoice(voice)}
+                    className="touch-button shrink-0 rounded-xl border border-purple-500/30 bg-purple-600/10 px-3 text-purple-100 transition hover:bg-purple-600/20 disabled:opacity-40"
+                    aria-label={`Preview selected voice ${voice}`}
+                    title={`Preview selected voice ${voice}`}
+                  >
+                    <Play className={`h-4 w-4 ${previewingVoice === voice ? "animate-pulse" : ""}`} />
+                  </button>
+                </div>
+                <div className="mt-3 flex items-center justify-between text-[10px] font-mono uppercase tracking-wide text-zinc-500">
+                  <span>Audition Voices</span>
+                  <span>{previewingVoice ? `Playing ${previewingVoice}` : "Click play to sample"}</span>
+                </div>
+                <div className="mt-2 max-h-44 overflow-y-auto rounded-2xl border border-zinc-850 bg-zinc-950/50 p-2">
                   <div className="grid grid-cols-1 gap-1.5">
                     {kokoroVoices.map((voiceName) => {
                       const isSelected = voiceName === voice;
