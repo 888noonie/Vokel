@@ -1,27 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
 
 from .config import VoiceLoopConfig
-from .lm_studio import ChatMessage, LmStudioClient
+from .events import TextDeltaEvent, ToolCallEvent
+from .inference import ChatMessage, LocalInferenceClient
 from .memory import MemoryConfig, MemoryStore, NullMemoryStore, build_memory_context
 from .playback import PlaybackSink
 from .telemetry import LatencyTrace
 from .text_chunker import PhraseChunker
+from .tools import ToolRegistry
 from .turns import AsrEngine, TurnProducer
 
 
 class ConversationEngine:
     def __init__(
         self,
-        llm: LmStudioClient,
+        llm: LocalInferenceClient,
         playback: PlaybackSink,
         config: VoiceLoopConfig | None = None,
         trace: LatencyTrace | None = None,
         echo_tokens: bool = True,
         memory_store: MemoryStore | None = None,
         memory_config: MemoryConfig | None = None,
+        tool_registry: ToolRegistry | None = None,
     ):
         self.llm = llm
         self.playback = playback
@@ -30,6 +34,7 @@ class ConversationEngine:
         self.echo_tokens = echo_tokens
         self.memory_config = memory_config or MemoryConfig()
         self.memory_store = memory_store or NullMemoryStore()
+        self.tool_registry = tool_registry
         self.history: list[ChatMessage] = [{"role": "system", "content": self.config.system_prompt}]
         self._playback_queue: asyncio.Queue[str] = asyncio.Queue()
         self._current_generation: asyncio.Task[None] | None = None
@@ -49,6 +54,12 @@ class ConversationEngine:
 
     async def wait_for_playback(self) -> None:
         await self._playback_queue.join()
+
+    async def reset_conversation(self) -> None:
+        await self.interrupt()
+        self.history = [{"role": "system", "content": self.config.system_prompt}]
+        self.trace.reset()
+        self.trace.mark("conversation_reset")
 
     async def submit_turn(self, user_text: str, reset_trace: bool = True) -> None:
         await self.interrupt()
@@ -115,18 +126,89 @@ class ConversationEngine:
         self.trace.mark("generation_started")
 
         try:
-            async for token in self.llm.stream_chat(self._messages_for_generation(memory_context)):
-                if not saw_token:
-                    self.trace.mark("first_token")
-                    saw_token = True
-                if self.echo_tokens:
-                    print(token, end="", flush=True)
-                assistant_text.append(token)
-                for phrase in chunker.push(token):
+            direct_web_reply = await self._maybe_run_required_web_search(user_text)
+            if direct_web_reply:
+                assistant_text.append(direct_web_reply)
+                for phrase in chunker.push(direct_web_reply):
                     if not saw_phrase:
                         self.trace.mark("first_phrase_queued", chars=len(phrase))
                         saw_phrase = True
                     await self._playback_queue.put(phrase)
+
+                final_phrase = chunker.flush()
+                if final_phrase:
+                    if not saw_phrase:
+                        self.trace.mark("first_phrase_queued", chars=len(final_phrase))
+                    await self._playback_queue.put(final_phrase)
+
+                self.history.append({"role": "assistant", "content": direct_web_reply})
+                self._trim_history()
+                self.trace.mark(
+                    "generation_finished",
+                    chars=len(direct_web_reply),
+                    text=direct_web_reply,
+                )
+                await self._record_memory_turn(user_text, direct_web_reply)
+                return
+
+            while True:
+                tool_calls_made = []
+                messages = self._messages_for_generation(memory_context)
+                tools = self.tool_registry.get_all_schemas() if self.tool_registry else None
+                
+                async for event in self.llm.stream_chat(messages, tools):
+                    if isinstance(event, TextDeltaEvent):
+                        token = event.content
+                        if not saw_token:
+                            self.trace.mark("first_token")
+                            saw_token = True
+                        if self.echo_tokens:
+                            print(token, end="", flush=True)
+                        assistant_text.append(token)
+                        for phrase in chunker.push(token):
+                            if not saw_phrase:
+                                self.trace.mark("first_phrase_queued", chars=len(phrase))
+                                saw_phrase = True
+                            await self._playback_queue.put(phrase)
+                    elif isinstance(event, ToolCallEvent):
+                        tool_calls_made.append(event)
+                
+                if tool_calls_made:
+                    # Append assistant's tool call request
+                    tool_calls_payload = [
+                        {
+                            "id": tc.call_id,
+                            "type": "function",
+                            "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}
+                        } for tc in tool_calls_made
+                    ]
+                    
+                    self.history.append({
+                        "role": "assistant",
+                        "content": "".join(assistant_text),
+                        "tool_calls": tool_calls_payload
+                    })
+                    
+                    if self.tool_registry:
+                        for tc in tool_calls_made:
+                            self.trace.mark("tool_call_started", tool_name=tc.name)
+                            result = await self.tool_registry.execute(tc)
+                            self.history.append({
+                                "role": "tool",
+                                "tool_call_id": tc.call_id,
+                                "name": tc.name,
+                                "content": result
+                            })
+                            self.trace.mark(
+                                "tool_call_finished",
+                                tool_name=tc.name,
+                                chars=len(result),
+                            )
+                    
+                    # Reset text for the next iteration to get final answer
+                    assistant_text = []
+                else:
+                    break
 
             final_phrase = chunker.flush()
             if final_phrase:
@@ -138,13 +220,70 @@ class ConversationEngine:
             if reply:
                 self.history.append({"role": "assistant", "content": reply})
                 self._trim_history()
+            
             self.trace.mark("generation_finished", chars=len(reply), text=reply)
+            
             if reply:
                 await self._record_memory_turn(user_text, reply)
         except asyncio.CancelledError:
             chunker.reset()
             self.trace.mark("generation_cancelled")
             raise
+
+    async def _maybe_run_required_web_search(self, user_text: str) -> str:
+        if not self.tool_registry or not self.tool_registry.get_tool("search_web"):
+            return ""
+
+        normalized = user_text.lower()
+        requires_search = any(
+            keyword in normalized
+            for keyword in (
+                "search",
+                "web",
+                "news",
+                "today",
+                "latest",
+                "current",
+                "breaking",
+                "real-time",
+            )
+        )
+        if not requires_search:
+            return ""
+
+        self.trace.mark("tool_call_forced", tool_name="search_web")
+        tool_call = ToolCallEvent(
+            call_id="forced_search_web",
+            name="search_web",
+            arguments={"query": user_text},
+        )
+        self.history.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": tool_call.call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.name,
+                            "arguments": json.dumps(tool_call.arguments),
+                        },
+                    }
+                ],
+            }
+        )
+        result = await self.tool_registry.execute(tool_call)
+        self.history.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call.call_id,
+                "name": tool_call.name,
+                "content": result,
+            }
+        )
+        self.trace.mark("tool_call_finished", tool_name="search_web", chars=len(result))
+        return f"I searched the web. Here are the top results I found:\n\n{result}"
 
     async def _run_playback(self) -> None:
         while True:
@@ -201,8 +340,21 @@ class ConversationEngine:
 
     def _messages_for_generation(self, memory_context: str) -> list[ChatMessage]:
         if not memory_context:
-            return list(self.history)
-        system = self.history[:1]
-        rest = self.history[1:]
-        memory_message: ChatMessage = {"role": "system", "content": memory_context}
-        return system + [memory_message] + rest
+            messages = list(self.history)
+        else:
+            system = self.history[:1]
+            rest = self.history[1:]
+            memory_message: ChatMessage = {"role": "system", "content": memory_context}
+            messages = system + [memory_message] + rest
+            
+        if self.tool_registry:
+            tool_names = ", ".join(s["function"]["name"] for s in self.tool_registry.get_all_schemas())
+            if tool_names:
+                instruction = (
+                    f"You have access to the following tools: {tool_names}. "
+                    "You MUST use these tools when the user asks for real-time information, web searches, or news. "
+                    "DO NOT pretend or hallucinate search results. You MUST call the tool."
+                )
+                messages.insert(1, {"role": "system", "content": instruction})
+                
+        return messages

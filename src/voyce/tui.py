@@ -6,8 +6,9 @@ import sys
 
 from .config import LmStudioConfig
 from .engine import ConversationEngine
-from .lm_studio import LmStudioClient
-from .playback import build_playback_sink, available_playback_backends
+from .web_search import create_default_registry
+from .inference import LocalInferenceClient
+from .playback import KOKORO_VOICES, build_playback_sink, available_playback_backends
 from .turns import AudioTurn
 
 
@@ -32,6 +33,8 @@ class InteractiveTextProducer:
 async def run_tui(args: argparse.Namespace) -> None:
     print("Welcome to Voyce Interactive Loop.")
     print(f"Using Playback Sink: {args.playback}")
+    if args.playback == "kokoro":
+        print(f"Using Kokoro voice: {args.voice}")
     print("Type your message and press Enter. Type /exit to quit.")
     print("If you interrupt, the assistant will stop speaking immediately.")
 
@@ -41,10 +44,10 @@ async def run_tui(args: argparse.Namespace) -> None:
     producer = InteractiveTextProducer()
 
     lm_config = LmStudioConfig(url=args.url, model=args.model)
-    sink = build_playback_sink(args.playback)
+    sink = build_playback_sink(args.playback, voice=args.voice, speed=args.tts_speed)
 
-    async with LmStudioClient(lm_config) as llm:
-        engine = ConversationEngine(llm=llm, playback=sink, echo_tokens=True)
+    async with LocalInferenceClient(lm_config) as llm:
+        engine = ConversationEngine(llm=llm, playback=sink, echo_tokens=True, tool_registry=create_default_registry())
         await engine.start()
         try:
             await engine.run_turns(producer=producer, asr=asr, max_turns=None)
@@ -63,6 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=available_playback_backends(),
         default="kokoro" if "kokoro" in available_playback_backends() else "console",
         help="The playback backend to use.",
+    )
+    parser.add_argument(
+        "--voice",
+        choices=KOKORO_VOICES,
+        default="af_heart",
+        help="Kokoro voice to use when --playback=kokoro.",
+    )
+    parser.add_argument(
+        "--tts-speed",
+        type=float,
+        default=1.0,
+        help="Kokoro speech speed multiplier, usually between 0.75 and 1.25.",
     )
     return parser
 

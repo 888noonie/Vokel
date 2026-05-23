@@ -9,7 +9,9 @@ from typing import Any
 
 from voyce.config import LmStudioConfig
 from voyce.engine import ConversationEngine
-from voyce.lm_studio import ChatMessage, LmStudioClient
+from voyce.events import TextDeltaEvent
+from voyce.web_search import create_default_registry
+from voyce.inference import ChatMessage, LocalInferenceClient
 from voyce.playback import PlaybackSink, build_playback_sink
 from voyce.progress import ConsoleProgressObserver
 from voyce.telemetry import LatencyTrace
@@ -49,12 +51,14 @@ class ScriptedLlm:
         self.first_token_s = first_token_ms / 1000
         self.token_gap_s = token_gap_ms / 1000
 
-    async def stream_chat(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
+    async def stream_chat(
+        self, messages: list[ChatMessage], tools: list[dict[str, Any]] | None = None
+    ) -> AsyncIterator[TextDeltaEvent]:
         await asyncio.sleep(self.first_token_s)
         for index, token in enumerate(self.tokens):
             if index:
                 await asyncio.sleep(self.token_gap_s)
-            yield token
+            yield TextDeltaEvent(token)
 
 
 class BenchmarkPlaybackSink:
@@ -85,7 +89,7 @@ async def run_engine_benchmark(
     trace = trace or LatencyTrace()
     if progress and own_trace:
         trace.add_observer(ConsoleProgressObserver())
-    engine = ConversationEngine(llm=llm, playback=playback, trace=trace, echo_tokens=False)
+    engine = ConversationEngine(llm=llm, playback=playback, trace=trace, echo_tokens=False, tool_registry=create_default_registry())
     await engine.start()
     try:
         await engine.run_turns(producer, asr=asr, max_turns=1)
@@ -127,7 +131,7 @@ async def run_synthetic(args: argparse.Namespace) -> BenchmarkResult:
 async def run_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
     lm_config = LmStudioConfig(url=args.url, model=args.model)
     playback = build_playback_sink(args.playback) if args.playback else BenchmarkPlaybackSink()
-    async with LmStudioClient(lm_config) as llm:
+    async with LocalInferenceClient(lm_config) as llm:
         return await run_engine_benchmark(
             name="lm-studio",
             llm=llm,
@@ -225,7 +229,7 @@ async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
     )
     playback = build_playback_sink(args.playback) if args.playback else BenchmarkPlaybackSink()
     lm_config = LmStudioConfig(url=args.url, model=args.model)
-    async with LmStudioClient(lm_config) as llm:
+    async with LocalInferenceClient(lm_config) as llm:
         return await run_engine_benchmark(
             name="mic-lm-studio",
             llm=llm,
@@ -250,7 +254,7 @@ async def run_mic_streaming_lm_studio(args: argparse.Namespace) -> BenchmarkResu
     producer = StreamingTurnProducer(mic, online_asr, trace)
     playback = build_playback_sink(args.playback) if args.playback else BenchmarkPlaybackSink()
     lm_config = LmStudioConfig(url=args.url, model=args.model)
-    async with LmStudioClient(lm_config) as llm:
+    async with LocalInferenceClient(lm_config) as llm:
         return await run_engine_benchmark(
             name="mic-streaming-lm-studio",
             llm=llm,

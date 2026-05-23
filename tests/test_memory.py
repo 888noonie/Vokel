@@ -54,6 +54,20 @@ class SQLiteMemoryStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entries, [])
         self.assertEqual(facts, [])
 
+    async def test_facts_can_be_edited_and_deleted_by_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteMemoryStore(Path(tmp) / "memory.sqlite3")
+            await store.record_fact("Use the first draft voice.")
+            fact = (await store.list_facts())[0]
+
+            await store.update_fact(fact.id or 0, "Use af_heart for baseline tests.")
+            edited = await store.list_facts()
+            await store.delete_fact(edited[0].id or 0)
+            facts = await store.list_facts()
+
+        self.assertEqual(edited[0].user_text, "Use af_heart for baseline tests.")
+        self.assertEqual(facts, [])
+
     def test_build_memory_context_respects_char_limit(self) -> None:
         context = build_memory_context([], max_chars=100)
 

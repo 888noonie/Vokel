@@ -124,6 +124,23 @@ Exit check:
 - screen-off or pocket-safe foreground service behavior
 - touchless interrupt and resume
 
+## Desktop Control Surface
+
+Goal: add operator controls without weakening the no-button live conversation loop.
+
+- Voice selection through named TTS voices/profiles
+- Pause conversation without discarding the current session
+- Reset the active conversation state
+- Export transcript and selected memory notes to `.md`
+- Edit memory entries locally, with clear audit visibility
+
+Exit check:
+
+- controls are available from the desktop UI/TUI
+- pause and reset do not break barge-in or listen/capture cues
+- exported Markdown excludes caches, model files, and generated audio
+- memory edits remain behind the `MemoryStore` interface
+
 ## Open Decisions
 
 - First Android LLM runner: llama.cpp, MLC, Google AI Edge, or another measured runtime.

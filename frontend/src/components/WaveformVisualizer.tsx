@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 
 interface WaveformVisualizerProps {
-  status: "idle" | "listening" | "generating" | "speaking";
+  status: "idle" | "listening" | "generating" | "speaking" | "paused";
   volume?: number; // 0.0 to 1.0 representing mic input volume
 }
 
@@ -61,6 +61,12 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ status, 
         waveCount = 4;
         amplitudeMultiplier = 0.35 + Math.sin(phase * 2) * 0.1; // Simulated speech wave
         frequencyMultiplier = 1.2;
+      } else if (status === "paused") {
+        primaryColor = "rgba(113, 113, 122, 0.65)";
+        secondaryColor = "rgba(113, 113, 122, 0.12)";
+        waveCount = 1;
+        amplitudeMultiplier = 0.03;
+        frequencyMultiplier = 0.35;
       }
 
       ctx.lineWidth = 2;

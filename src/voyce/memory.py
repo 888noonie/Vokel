@@ -25,6 +25,7 @@ class MemoryEntry:
     created_at_ns: int
     score: int = 0
     kind: str = "turn"
+    id: int | None = None
 
     def to_prompt_snippet(self) -> str:
         if self.kind == "fact":
@@ -84,6 +85,16 @@ class SQLiteMemoryStore:
         if limit <= 0:
             return []
         return await asyncio.to_thread(self._list_facts_sync, limit)
+
+    async def update_fact(self, fact_id: int, fact_text: str) -> None:
+        if fact_id <= 0 or not fact_text.strip():
+            return
+        await asyncio.to_thread(self._update_fact_sync, fact_id, _clean_fact(fact_text))
+
+    async def delete_fact(self, fact_id: int) -> None:
+        if fact_id <= 0:
+            return
+        await asyncio.to_thread(self._delete_fact_sync, fact_id)
 
     async def clear(self) -> None:
         await asyncio.to_thread(self._clear_sync)
@@ -149,7 +160,7 @@ class SQLiteMemoryStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT created_at_ns, fact_text
+                SELECT id, created_at_ns, fact_text
                 FROM memory_facts
                 ORDER BY created_at_ns DESC
                 LIMIT ?
@@ -162,9 +173,25 @@ class SQLiteMemoryStore:
                 assistant_text="",
                 created_at_ns=int(created_at_ns),
                 kind="fact",
+                id=int(row_id),
             )
-            for created_at_ns, fact_text in rows
+            for row_id, created_at_ns, fact_text in rows
         ]
+
+    def _update_fact_sync(self, fact_id: int, fact_text: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE memory_facts
+                SET created_at_ns = ?, fact_text = ?
+                WHERE id = ?
+                """,
+                (time.time_ns(), fact_text, fact_id),
+            )
+
+    def _delete_fact_sync(self, fact_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM memory_facts WHERE id = ?", (fact_id,))
 
     def _clear_sync(self) -> None:
         with self._connect() as conn:
@@ -188,7 +215,7 @@ class SQLiteMemoryStore:
             ).fetchall()
             fact_rows = conn.execute(
                 """
-                SELECT created_at_ns, fact_text
+                SELECT id, created_at_ns, fact_text
                 FROM memory_facts
                 ORDER BY created_at_ns DESC
                 LIMIT ?
@@ -197,7 +224,7 @@ class SQLiteMemoryStore:
             ).fetchall()
 
         scored: list[MemoryEntry] = []
-        for created_at_ns, fact_text in fact_rows:
+        for row_id, created_at_ns, fact_text in fact_rows:
             score = _score_text(str(fact_text), terms)
             if score:
                 scored.append(
@@ -207,6 +234,7 @@ class SQLiteMemoryStore:
                         created_at_ns=int(created_at_ns),
                         score=score + 1,
                         kind="fact",
+                        id=int(row_id),
                     )
                 )
 

@@ -4,23 +4,27 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from voyce.engine import ConversationEngine
-from voyce.lm_studio import ChatMessage
+from voyce.events import Event, TextDeltaEvent, ToolCallEvent
+from voyce.inference import ChatMessage
 from voyce.memory import MemoryConfig, MemoryEntry
+from voyce.tools import ToolDefinition, ToolRegistry
 from voyce.turns import PassthroughAsr, TextTurnProducer
 
 
 class FakeLlm:
-    def __init__(self, tokens: list[str], delay: float = 0) -> None:
-        self.tokens = tokens
+    def __init__(self, events: list[Event], delay: float = 0) -> None:
+        self.events = events
         self.delay = delay
         self.messages: list[list[ChatMessage]] = []
 
-    async def stream_chat(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
+    async def stream_chat(
+        self, messages: Sequence[ChatMessage], tools: list[dict[str, Any]] | None = None
+    ) -> AsyncIterator[Event]:
         self.messages.append(list(messages))
-        for token in self.tokens:
+        for event in self.events:
             if self.delay:
                 await asyncio.sleep(self.delay)
-            yield token
+            yield event
 
 
 class RecordingPlayback:
@@ -58,7 +62,7 @@ class FakeMemoryStore:
 
 class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
     async def test_completed_turn_records_reply_and_speaks_phrases(self) -> None:
-        llm: Any = FakeLlm(["Hello, ", "Richard."])
+        llm: Any = FakeLlm([TextDeltaEvent("Hello, "), TextDeltaEvent("Richard.")])
         playback = RecordingPlayback()
         engine = ConversationEngine(llm=llm, playback=playback)
 
@@ -73,7 +77,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Hello, Richard."})
 
     async def test_interrupt_cancels_generation_and_stops_playback(self) -> None:
-        llm: Any = FakeLlm(["This response will take a while. "], delay=1)
+        llm: Any = FakeLlm([TextDeltaEvent("This response will take a while. ")], delay=1)
         playback = RecordingPlayback()
         engine = ConversationEngine(llm=llm, playback=playback)
 
@@ -87,7 +91,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(playback.stop_count, 1)
 
     async def test_run_turns_transcribes_and_submits_turn(self) -> None:
-        llm: Any = FakeLlm(["Ready."])
+        llm: Any = FakeLlm([TextDeltaEvent("Ready.")])
         playback = RecordingPlayback()
         engine = ConversationEngine(llm=llm, playback=playback)
 
@@ -105,7 +109,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Ready."})
 
     async def test_enabled_memory_is_injected_and_recorded(self) -> None:
-        llm: Any = FakeLlm(["Remembered."])
+        llm: Any = FakeLlm([TextDeltaEvent("Remembered.")])
         playback = RecordingPlayback()
         memory = FakeMemoryStore()
         engine = ConversationEngine(
@@ -127,6 +131,50 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Relevant saved context", messages[1]["content"])
         self.assertEqual(memory.records, [("What did we decide about memory?", "Remembered.")])
         self.assertIn("memory_retrieval", engine.trace.summary_ms())
+
+    async def test_web_search_prompt_forces_search_before_generation(self) -> None:
+        queries: list[str] = []
+
+        async def fake_search_web(query: str) -> str:
+            queries.append(query)
+            return "Story one. Story two. Story three."
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_web",
+                description="Search the web.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_web,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("The model should not answer this.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry)
+
+        await engine.start()
+        try:
+            await engine.submit_turn("Search for the top UK political news results today.")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(queries, ["Search for the top UK political news results today."])
+        self.assertEqual(llm.messages, [])
+        self.assertIn(
+            "I searched the web. Here are the top results I found: Story one. Story two. Story three.",
+            " ".join(playback.spoken),
+        )
+        messages = engine.history
+        self.assertIn(
+            {
+                "role": "tool",
+                "tool_call_id": "forced_search_web",
+                "name": "search_web",
+                "content": "Story one. Story two. Story three.",
+            },
+            messages,
+        )
 
 
 if __name__ == "__main__":

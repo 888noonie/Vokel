@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 import shutil
 from dataclasses import dataclass
 from typing import Protocol, Any
+
+URL_RE = re.compile(r"https?://\S+")
+MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
 
 
 class PlaybackSink(Protocol):
@@ -18,7 +23,7 @@ class ConsolePlaybackSink:
     """Development sink that shows phrase boundaries without producing audio."""
 
     async def speak(self, phrase: str) -> None:
-        print(f"\n[TTS phrase] {phrase}", flush=True)
+        print(f"\n[TTS phrase] {sanitize_for_speech(phrase)}", flush=True)
         await asyncio.sleep(0)
 
     async def stop(self) -> None:
@@ -82,10 +87,11 @@ class SubprocessPlaybackSink:
                 self._process = None
 
     def _render_command(self, phrase: str) -> tuple[str, ...]:
-        rendered = tuple(part.format(text=phrase) for part in self.config.command)
+        speech_text = sanitize_for_speech(phrase)
+        rendered = tuple(part.format(text=speech_text) for part in self.config.command)
         if any("{text}" in part for part in self.config.command):
             return rendered
-        return (*rendered, phrase)
+        return (*rendered, speech_text)
 
     async def _run_stop_command(self) -> None:
         process = await asyncio.create_subprocess_exec(
@@ -110,10 +116,42 @@ class SpdSayPlaybackSink(SubprocessPlaybackSink):
         )
 
 
+KOKORO_VOICES = (
+    "af_alloy",
+    "af_aoede",
+    "af_heart",
+    "af_bella",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
+)
+
+
 class KokoroPlaybackSink:
     """Playback sink that synthesizes phrases using Kokoro ONNX and plays via sounddevice."""
 
-    def __init__(self, voice: str = "af_heart"):
+    def __init__(self, voice: str = "af_heart", speed: float = 1.0):
         import sounddevice as sd
         from kokoro_onnx import Kokoro
         from pathlib import Path
@@ -130,6 +168,7 @@ class KokoroPlaybackSink:
 
         self.kokoro = Kokoro(str(model_path), str(voices_path))
         self.voice = voice
+        self.speed = speed
         self.sd = sd
         self._playback_task: asyncio.Task[Any] | None = None
         self._synthesis_task: asyncio.Task[Any] | None = None
@@ -138,11 +177,12 @@ class KokoroPlaybackSink:
     async def speak(self, phrase: str) -> None:
         await self.stop()
         self._stop_event.clear()
+        speech_text = sanitize_for_speech(phrase)
         
         queue: asyncio.Queue[Any] = asyncio.Queue()
         
         # Start synthesis in the background
-        self._synthesis_task = asyncio.create_task(self._synthesize_loop(phrase, queue))
+        self._synthesis_task = asyncio.create_task(self._synthesize_loop(speech_text, queue))
         # Start playback in the foreground (blocks until finished or stopped)
         self._playback_task = asyncio.create_task(self._playback_loop(queue))
         
@@ -154,7 +194,7 @@ class KokoroPlaybackSink:
     async def _synthesize_loop(self, phrase: str, queue: asyncio.Queue[Any]) -> None:
         try:
             async for samples, sample_rate in self.kokoro.create_stream(
-                phrase, self.voice, 1.0, "en-us"
+                phrase, self.voice, self.speed, "en-us"
             ):
                 if self._stop_event.is_set():
                     break
@@ -197,13 +237,32 @@ def available_playback_backends() -> list[str]:
     return backends
 
 
-def build_playback_sink(name: str) -> PlaybackSink:
+def build_playback_sink(name: str, voice: str = "af_heart", speed: float = 1.0) -> PlaybackSink:
     if name == "console":
         return ConsolePlaybackSink()
     if name == "kokoro":
-        return KokoroPlaybackSink()
+        return KokoroPlaybackSink(voice=voice, speed=speed)
     if name == "spd-say":
         if not shutil.which("spd-say"):
             raise RuntimeError("spd-say is not installed")
         return SpdSayPlaybackSink()
     raise ValueError(f"Unknown playback backend: {name}")
+
+
+def sanitize_for_speech(text: str) -> str:
+    """Convert display-oriented assistant text into calmer TTS input."""
+
+    speech = html.unescape(text)
+    speech = MARKDOWN_LINK_RE.sub(r"\1. Link available in transcript.", speech)
+    speech = URL_RE.sub(" Link available in transcript. ", speech)
+    speech = re.sub(r"```[\s\S]*?```", " code block omitted. ", speech)
+    speech = re.sub(r"`([^`]+)`", r"\1", speech)
+    speech = re.sub(r"(?m)^\s{0,3}[-*+]\s+", "", speech)
+    speech = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", speech)
+    speech = re.sub(r"[*~]+", "", speech)
+    speech = speech.replace("_", " ")
+    speech = re.sub(r"[<>|]+", " ", speech)
+    speech = re.sub(r"\s+", " ", speech)
+    speech = re.sub(r"\s+([.,;:!?])", r"\1", speech)
+    speech = re.sub(r"([.!?]){2,}", r"\1", speech)
+    return speech.strip()

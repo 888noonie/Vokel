@@ -21,7 +21,7 @@ def test_root_endpoint_returns_api_status() -> None:
         assert "Voyce Backend API" in response.json()["message"]
 
 
-@patch("voyce.web.LmStudioClient")
+@patch("voyce.web.LocalInferenceClient")
 @patch("voyce.web.create_streaming_asr")
 @patch("voyce.web.KokoroPlaybackSink")
 def test_websocket_browser_mode_flow(
@@ -105,7 +105,7 @@ def test_websocket_browser_mode_flow(
         assert res_stopped["type"] == "session_stopped"
 
 
-@patch("voyce.web.LmStudioClient")
+@patch("voyce.web.LocalInferenceClient")
 @patch("voyce.web.create_streaming_asr")
 @patch("voyce.web.KokoroPlaybackSink")
 def test_websocket_barge_in_bypasses(

@@ -21,9 +21,17 @@ from .audio import (
 )
 from .config import LmStudioConfig
 from .engine import ConversationEngine
-from .lm_studio import LmStudioClient
+from .web_search import create_default_registry
+from .inference import LocalInferenceClient
 from .memory import MemoryConfig, SQLiteMemoryStore
-from .playback import KokoroPlaybackSink, SpdSayPlaybackSink, ConsolePlaybackSink, PlaybackSink
+from .playback import (
+    KOKORO_VOICES,
+    KokoroPlaybackSink,
+    SpdSayPlaybackSink,
+    ConsolePlaybackSink,
+    PlaybackSink,
+    sanitize_for_speech,
+)
 from .telemetry import LatencyTrace, TraceEvent
 
 logging.basicConfig(level=logging.INFO)
@@ -92,11 +100,12 @@ class WebSocketPlaybackSink:
             "type": "assistant_phrase",
             "phrase": phrase,
         })
+        speech_phrase = sanitize_for_speech(phrase)
 
         if self.kokoro_sink:
             try:
                 async for samples, sample_rate in self.kokoro_sink.kokoro.create_stream(
-                    phrase, self.kokoro_sink.voice, 1.0, "en-us"
+                    speech_phrase, self.kokoro_sink.voice, self.kokoro_sink.speed, "en-us"
                 ):
                     samples_f32 = np.asarray(samples, dtype=np.float32)
                     await self.send_bytes_coro(samples_f32.tobytes())
@@ -104,7 +113,7 @@ class WebSocketPlaybackSink:
                 logger.error(f"Kokoro Web synthesis failed: {e}")
         else:
             # Fallback when Kokoro is not loaded: wait to simulate reading speed
-            await asyncio.sleep(len(phrase) * 0.05)
+            await asyncio.sleep(len(speech_phrase) * 0.05)
 
     async def stop(self) -> None:
         await self.send_json_coro({
@@ -123,8 +132,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     # Keep track of active tasks and engines to clean them up on disconnect
     session_mode: str | None = None
     engine: ConversationEngine | None = None
-    llm_client: LmStudioClient | None = None
+    llm_client: LocalInferenceClient | None = None
     local_loop_task: asyncio.Task[None] | None = None
+    session_paused = False
+    active_memory_store: SQLiteMemoryStore | None = None
+
+    def memory_entry_payload(entry: Any) -> dict[str, Any]:
+        return {
+            "id": entry.id,
+            "text": entry.user_text,
+            "created_at_ns": entry.created_at_ns,
+            "kind": entry.kind,
+        }
+
+    async def send_memory_facts(store: SQLiteMemoryStore | None) -> None:
+        if store is None:
+            await send_json({"type": "memory_facts", "facts": []})
+            return
+        facts = await store.list_facts(limit=50)
+        await send_json({
+            "type": "memory_facts",
+            "facts": [memory_entry_payload(fact) for fact in facts],
+        })
 
     async def send_json(data: dict[str, Any]) -> None:
         await websocket.send_json(data)
@@ -151,22 +180,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     if llm_client:
                         await llm_client.__aexit__(None, None, None)
 
+                    session_paused = False
                     session_mode = data.get("mode", "local")
                     url = data.get("url", LmStudioConfig.url)
                     model = data.get("model", LmStudioConfig.model)
+                    voice = str(data.get("voice", "af_heart"))
+                    if voice not in KOKORO_VOICES:
+                        voice = "af_heart"
+                    tts_speed = float(data.get("tts_speed", 1.0))
+                    tts_speed = min(1.25, max(0.75, tts_speed))
                     memory_config = MemoryConfig(
                         enabled=bool(data.get("memory", False)),
                         path=Path(str(data.get("memory_db", MemoryConfig.path))),
                         max_results=int(data.get("memory_results", MemoryConfig.max_results)),
                     )
-                    memory_store = (
-                        SQLiteMemoryStore(memory_config.path, scan_limit=memory_config.scan_limit)
-                        if memory_config.enabled
-                        else None
+                    active_memory_store = SQLiteMemoryStore(
+                        memory_config.path,
+                        scan_limit=memory_config.scan_limit,
                     )
+                    memory_store = active_memory_store if memory_config.enabled else None
 
                     lm_config = LmStudioConfig(url=url, model=model)
-                    llm_client = LmStudioClient(lm_config)
+                    llm_client = LocalInferenceClient(lm_config)
                     await llm_client.__aenter__()
 
                     trace = LatencyTrace()
@@ -175,7 +210,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     # Initialize Kokoro sink locally as a helper
                     kokoro_sink: KokoroPlaybackSink | None = None
                     try:
-                        kokoro_sink = KokoroPlaybackSink()
+                        kokoro_sink = KokoroPlaybackSink(voice=voice, speed=tts_speed)
                     except Exception as e:
                         logger.warning(f"Kokoro not available for backend: {e}")
 
@@ -215,6 +250,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             echo_tokens=False,
                             memory_store=memory_store,
                             memory_config=memory_config,
+                            tool_registry=create_default_registry(),
                         )
                         await engine.start()
 
@@ -224,6 +260,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         async def local_run_loop() -> None:
                             try:
                                 while True:
+                                    if session_paused:
+                                        await asyncio.sleep(0.1)
+                                        continue
                                     await send_json({"type": "status", "status": "listening"})
                                     await local_engine.run_turns(producer, asr, max_turns=1)
                                     # Push latest summary metrics
@@ -242,7 +281,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         await send_json({
                             "type": "session_started",
                             "mode": "local",
+                            "voice": voice,
                         })
+                        await send_memory_facts(active_memory_store)
 
                     elif session_mode == "browser":
                         # Browser mode: WebSocket serves as microphone & speaker
@@ -254,6 +295,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             echo_tokens=False,
                             memory_store=memory_store,
                             memory_config=memory_config,
+                            tool_registry=create_default_registry(),
                         )
                         await engine.start()
 
@@ -276,8 +318,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         await send_json({
                             "type": "session_started",
                             "mode": "browser",
+                            "voice": voice,
                         })
                         await send_json({"type": "status", "status": "listening"})
+                        await send_memory_facts(active_memory_store)
 
                     else:
                         await send_json({
@@ -295,6 +339,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     engine = None
                     llm_client = None
                     session_mode = None
+                    session_paused = False
                     await send_json({"type": "session_stopped"})
 
                 elif msg_type == "interrupt":
@@ -302,8 +347,69 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         await engine.interrupt()
                         await send_json({"type": "status", "status": "listening"})
 
+                elif msg_type == "pause_session":
+                    if engine:
+                        session_paused = True
+                        await engine.interrupt()
+                        if session_mode == "local" and local_loop_task and not local_loop_task.done():
+                            local_loop_task.cancel()
+                        await send_json({"type": "status", "status": "paused"})
+
+                elif msg_type == "resume_session":
+                    if engine:
+                        session_paused = False
+                        if session_mode == "browser":
+                            browser_asr_stream = browser_asr.create_stream()
+                            browser_last_text = ""
+                            browser_all_samples.clear()
+                            browser_stable_fired = False
+                            engine.trace.mark("capture_started")
+                        elif session_mode == "local":
+                            if local_loop_task is None or local_loop_task.done():
+                                local_loop_task = asyncio.create_task(local_run_loop())
+                        await send_json({"type": "status", "status": "listening"})
+
+                elif msg_type == "reset_session":
+                    if engine:
+                        await engine.reset_conversation()
+                        if session_mode == "browser":
+                            browser_asr_stream = browser_asr.create_stream()
+                            browser_last_text = ""
+                            browser_all_samples.clear()
+                            browser_stable_fired = False
+                            if not session_paused:
+                                engine.trace.mark("capture_started")
+                        await send_json({"type": "session_reset"})
+                        await send_json({
+                            "type": "status",
+                            "status": "paused" if session_paused else "listening",
+                        })
+
+                elif msg_type == "memory_list":
+                    await send_memory_facts(active_memory_store)
+
+                elif msg_type == "memory_save":
+                    if active_memory_store:
+                        await active_memory_store.record_fact(str(data.get("text", "")))
+                    await send_memory_facts(active_memory_store)
+
+                elif msg_type == "memory_update":
+                    if active_memory_store:
+                        await active_memory_store.update_fact(
+                            int(data.get("id", 0)),
+                            str(data.get("text", "")),
+                        )
+                    await send_memory_facts(active_memory_store)
+
+                elif msg_type == "memory_delete":
+                    if active_memory_store:
+                        await active_memory_store.delete_fact(int(data.get("id", 0)))
+                    await send_memory_facts(active_memory_store)
+
             # Handle binary audio packets in browser streaming mode
             elif "bytes" in message and session_mode == "browser" and engine:
+                if session_paused:
+                    continue
                 audio_data = message["bytes"]
                 # Convert raw bytes (Float32 PCM) to a numpy float32 array
                 samples = np.frombuffer(audio_data, dtype=np.float32)

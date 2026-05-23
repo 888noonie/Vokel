@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { User, Bot, Volume2 } from "lucide-react";
+import { User, Radio, Volume2 } from "lucide-react";
 
 export interface Message {
   id: string;
@@ -10,7 +10,34 @@ export interface Message {
 
 interface TranscriptStreamProps {
   messages: Message[];
-  status: "idle" | "listening" | "generating" | "speaking";
+  status: "idle" | "listening" | "generating" | "speaking" | "paused";
+}
+
+const urlPattern = /(https?:\/\/[^\s)]+)/g;
+
+function renderTextWithLinks(text: string) {
+  return text.split(urlPattern).map((part, index) => {
+    if (!part.match(urlPattern)) {
+      return part;
+    }
+
+    const href = part.replace(/[.,;!?]+$/, "");
+    const trailing = part.slice(href.length);
+
+    return (
+      <React.Fragment key={`${href}-${index}`}>
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="text-sky-300 underline decoration-sky-400/40 underline-offset-2 hover:text-sky-200"
+        >
+          {href}
+        </a>
+        {trailing}
+      </React.Fragment>
+    );
+  });
 }
 
 export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, status }) => {
@@ -22,6 +49,12 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
   }, [messages, status]);
+
+  const assistantMark = (
+    <span className="relative flex h-4 w-4 items-center justify-center rounded-full bg-blue-400/15">
+      <Radio className="h-3 w-3" />
+    </span>
+  );
 
   return (
     <div className="voyce-panel rounded-3xl p-5 sm:p-6 flex flex-col min-h-[360px] h-[52vh] max-h-[560px]">
@@ -57,7 +90,7 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
                       : "bg-blue-950/50 text-blue-400 border-blue-900/50"
                   }`}
                 >
-                  {isUser ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                  {isUser ? <User className="w-4 h-4" /> : assistantMark}
                 </div>
 
                 <div
@@ -69,8 +102,8 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
                       : "bg-blue-600/10 text-blue-100 border border-blue-550/20"
                   }`}
                 >
-                  <p className={msg.isPartial ? "italic animate-pulse" : ""}>
-                    {msg.text}
+                  <p className={msg.isPartial ? "italic animate-pulse whitespace-pre-wrap" : "whitespace-pre-wrap"}>
+                    {renderTextWithLinks(msg.text)}
                   </p>
                 </div>
               </div>
@@ -81,7 +114,7 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
         {status === "generating" && (
           <div className="flex gap-3 mr-auto max-w-[85%] animate-pulse">
             <div className="w-8 h-8 rounded-full bg-amber-950/50 text-amber-400 border border-amber-900/50 flex items-center justify-center shrink-0">
-              <Bot className="w-4 h-4" />
+              <Radio className="w-4 h-4" />
             </div>
             <div className="bg-amber-600/5 border border-amber-500/10 rounded-2xl px-4 py-2.5 flex items-center space-x-1.5 h-10">
               <div className="w-2 h-2 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />

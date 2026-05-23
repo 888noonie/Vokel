@@ -55,6 +55,17 @@ The web dashboard exposes the same opt-in toggle for browser and local sessions.
 The engine talks to a small memory interface rather than SQLite directly, which
 keeps the Android port free to use its native SQLite layer later.
 
+## Agent Tools and Speech Polish
+
+Voyce can run external tools through a small registry. Web/news/current requests
+use the `search_web` tool directly so small local models cannot pretend they
+browsed. Search evidence stays visible in the transcript with clickable links,
+while the TTS path receives cleaned speech text that strips Markdown markers,
+raw URLs, and formatting symbols before synthesis.
+
+The web UI plays a quiet cue while a tool call is active. Kokoro playback exposes
+additional bundled voices and a speech-speed control for quick voice tuning.
+
 ## Research Direction
 
 Current latency work points toward three production choices:
@@ -72,6 +83,7 @@ The immediate code path is still desktop-first. That keeps the behavior easy to 
 - `build-log.md` is ignored for local experiment notes; start from `build-log.example.md` when useful.
 - `docs/latency-budget.md` defines the STST timing targets.
 - `docs/memory.md` explains the opt-in recall path and timing budget.
+- `docs/agent-tools.md` explains web search tools, clickable evidence, and tool-call cues.
 - `docs/model-matrix.md` tracks backend candidates before deeper integration.
 - `docs/audio-setup.md` explains the first real microphone benchmark path.
 

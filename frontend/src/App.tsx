@@ -9,6 +9,12 @@ import {
   Power,
   AlertCircle,
   Brain,
+  Pause,
+  Play,
+  RotateCcw,
+  Download,
+  Save,
+  Trash2,
 } from "lucide-react";
 import { LatencyScoreboard } from "./components/LatencyScoreboard";
 import { WaveformVisualizer } from "./components/WaveformVisualizer";
@@ -17,7 +23,44 @@ import type { Message } from "./components/TranscriptStream";
 import { useAudioStreamer } from "./hooks/useAudioStreamer";
 
 type Mode = "local" | "browser";
-type Status = "idle" | "listening" | "generating" | "speaking";
+type Status = "idle" | "listening" | "generating" | "speaking" | "paused";
+
+interface MemoryFact {
+  id: number;
+  text: string;
+  created_at_ns: number;
+}
+
+const kokoroVoices = [
+  "af_alloy",
+  "af_aoede",
+  "af_heart",
+  "af_bella",
+  "af_jessica",
+  "af_kore",
+  "af_nicole",
+  "af_nova",
+  "af_river",
+  "af_sarah",
+  "af_sky",
+  "am_adam",
+  "am_echo",
+  "am_eric",
+  "am_fenrir",
+  "am_liam",
+  "am_michael",
+  "am_onyx",
+  "am_puck",
+  "am_santa",
+  "bf_alice",
+  "bf_emma",
+  "bf_isabella",
+  "bf_lily",
+  "bm_daniel",
+  "bm_fable",
+  "bm_george",
+  "bm_lewis",
+];
 
 function App() {
   const [mode, setMode] = useState<Mode>("browser");
@@ -27,14 +70,23 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [metrics, setMetrics] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
+  const [memoryFacts, setMemoryFacts] = useState<MemoryFact[]>([]);
+  const [selectedMemoryIds, setSelectedMemoryIds] = useState<Set<number>>(new Set());
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [isPaused, setIsPaused] = useState(false);
 
   // Settings
   const [lmStudioUrl, setLmStudioUrl] = useState("http://localhost:1234/v1/chat/completions");
   const [lmStudioModel, setLmStudioModel] = useState("gemma-4-e4b-it-ultra-uncensored-heretic");
   const [playbackBackend, setPlaybackBackend] = useState("kokoro");
+  const [voice, setVoice] = useState("af_heart");
+  const [ttsSpeed, setTtsSpeed] = useState(1);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const toolAudioContextRef = useRef<AudioContext | null>(null);
+  const toolNoiseSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const toolNoiseGainRef = useRef<GainNode | null>(null);
 
   // Hook for audio streaming and local queue scheduling in browser mode
   const { startStreaming, stopStreaming, isStreaming, micVolume } = useAudioStreamer();
@@ -42,11 +94,76 @@ function App() {
   // Close websocket on unmount
   useEffect(() => {
     return () => {
+      stopToolCue();
       if (socketRef.current) {
         socketRef.current.close();
       }
     };
   }, []);
+
+  const getToolAudioContext = () => {
+    if (!toolAudioContextRef.current) {
+      toolAudioContextRef.current = new AudioContext();
+    }
+    return toolAudioContextRef.current;
+  };
+
+  const startToolCue = async () => {
+    if (toolNoiseSourceRef.current) return;
+
+    const audioContext = getToolAudioContext();
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+
+    const buffer = audioContext.createBuffer(1, audioContext.sampleRate * 2, audioContext.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i += 1) {
+      data[i] = Math.random() * 2 - 1;
+    }
+
+    const source = audioContext.createBufferSource();
+    const filter = audioContext.createBiquadFilter();
+    const gain = audioContext.createGain();
+
+    source.buffer = buffer;
+    source.loop = true;
+    filter.type = "lowpass";
+    filter.frequency.value = 900;
+    // 50% of a deliberately quiet cue bed, so the signal is present but does not mask speech.
+    gain.gain.value = 0.05;
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioContext.destination);
+    source.start();
+
+    toolNoiseSourceRef.current = source;
+    toolNoiseGainRef.current = gain;
+  };
+
+  const stopToolCue = () => {
+    const source = toolNoiseSourceRef.current;
+    const gain = toolNoiseGainRef.current;
+    if (!source) return;
+
+    if (gain && toolAudioContextRef.current) {
+      gain.gain.setTargetAtTime(0, toolAudioContextRef.current.currentTime, 0.04);
+    }
+
+    window.setTimeout(() => {
+      try {
+        source.stop();
+      } catch {
+        // Source may already have stopped after a websocket close or interrupt.
+      }
+      source.disconnect();
+      gain?.disconnect();
+    }, 120);
+
+    toolNoiseSourceRef.current = null;
+    toolNoiseGainRef.current = null;
+  };
 
   const handleConnect = () => {
     if (isConnected) {
@@ -68,6 +185,8 @@ function App() {
       setIsConnected(false);
       setIsSessionActive(false);
       setStatus("idle");
+      setIsPaused(false);
+      stopToolCue();
       stopStreaming();
     };
 
@@ -83,6 +202,7 @@ function App() {
         switch (data.type) {
           case "session_started":
             setIsSessionActive(true);
+            setIsPaused(false);
             setStatus("listening");
             if (data.mode === "browser") {
               startStreaming(socket);
@@ -92,12 +212,30 @@ function App() {
           case "session_stopped":
             setIsSessionActive(false);
             setStatus("idle");
+            setIsPaused(false);
+            stopToolCue();
             stopStreaming();
             break;
 
           case "status":
             setStatus(data.status);
+            setIsPaused(data.status === "paused");
             break;
+
+          case "session_reset":
+            setMessages([]);
+            setMetrics({});
+            break;
+
+          case "memory_facts": {
+            const facts = (data.facts ?? []) as MemoryFact[];
+            setMemoryFacts(facts);
+            setSelectedMemoryIds((current) => {
+              const valid = new Set(facts.map((fact) => fact.id));
+              return new Set([...current].filter((id) => valid.has(id)));
+            });
+            break;
+          }
 
           case "partial_transcript":
             setMessages((prev) => {
@@ -184,10 +322,21 @@ function App() {
 
           case "playback_stop":
             // Trigger browser-side player queue clearance (handled automatically inside useAudioStreamer)
+            stopToolCue();
             break;
 
           case "telemetry":
-            // Log or stream markers directly
+            if (data.event === "tool_call_forced" || data.event === "tool_call_started") {
+              startToolCue();
+            }
+            if (
+              data.event === "tool_call_finished" ||
+              data.event === "tool_call_failed" ||
+              data.event === "generation_finished" ||
+              data.event === "generation_cancelled"
+            ) {
+              stopToolCue();
+            }
             break;
 
           case "summary":
@@ -195,6 +344,7 @@ function App() {
             break;
 
           case "error":
+            stopToolCue();
             setError(data.message);
             break;
         }
@@ -216,6 +366,8 @@ function App() {
         url: lmStudioUrl,
         model: lmStudioModel,
         playback: playbackBackend,
+        voice,
+        tts_speed: ttsSpeed,
         memory: memoryEnabled,
       })
     );
@@ -239,6 +391,99 @@ function App() {
         type: "interrupt",
       })
     );
+  };
+
+  const sendControl = (type: string, payload: Record<string, unknown> = {}) => {
+    if (!socketRef.current || !isConnected) return;
+    socketRef.current.send(JSON.stringify({ type, ...payload }));
+  };
+
+  const handlePauseResume = () => {
+    if (!isSessionActive) return;
+    sendControl(isPaused ? "resume_session" : "pause_session");
+    if (mode === "browser") {
+      if (isPaused) {
+        if (socketRef.current) startStreaming(socketRef.current);
+      } else {
+        stopStreaming();
+      }
+    }
+  };
+
+  const handleReset = () => {
+    if (!isSessionActive) return;
+    sendControl("reset_session");
+    setMessages([]);
+    setMetrics({});
+  };
+
+  const handleSaveMemory = () => {
+    const text = memoryDraft.trim();
+    if (!text) return;
+    sendControl("memory_save", { text });
+    setMemoryDraft("");
+  };
+
+  const handleUpdateMemory = (id: number, text: string) => {
+    sendControl("memory_update", { id, text });
+  };
+
+  const handleDeleteMemory = (id: number) => {
+    sendControl("memory_delete", { id });
+  };
+
+  const toggleMemorySelection = (id: number) => {
+    setSelectedMemoryIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleExportMarkdown = () => {
+    const selectedFacts = memoryFacts.filter((fact) => selectedMemoryIds.has(fact.id));
+    const lines = [
+      "# Voyce Session Export",
+      "",
+      `Exported: ${new Date().toISOString()}`,
+      "",
+      "## Transcript",
+      "",
+      ...(
+        messages.length
+          ? messages
+              .filter((message) => !message.isPartial)
+              .flatMap((message) => [
+                `### ${message.role === "user" ? "User" : "Assistant"}`,
+                "",
+                message.text.trim(),
+                "",
+              ])
+          : ["No transcript captured.", ""]
+      ),
+      "## Selected Memory Notes",
+      "",
+      ...(
+        selectedFacts.length
+          ? selectedFacts.map((fact) => `- ${fact.text}`)
+          : ["No memory notes selected."]
+      ),
+      "",
+    ];
+
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `voyce-session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -359,6 +604,20 @@ function App() {
                       <Flame className="w-4 h-4 animate-bounce" />
                       <span>BARGE IN</span>
                     </button>
+                    <button
+                      onClick={handlePauseResume}
+                      className="touch-button bg-zinc-950 border border-zinc-850 hover:bg-zinc-900 px-4 rounded-xl text-sm font-bold tracking-wide flex items-center justify-center space-x-2 text-zinc-300 transition-all"
+                    >
+                      {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                      <span>{isPaused ? "RESUME" : "PAUSE"}</span>
+                    </button>
+                    <button
+                      onClick={handleReset}
+                      className="touch-button bg-zinc-950 border border-zinc-850 hover:bg-zinc-900 px-4 rounded-xl text-sm font-bold tracking-wide flex items-center justify-center space-x-2 text-zinc-300 transition-all"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      <span>RESET</span>
+                    </button>
                   </>
                 )}
               </div>
@@ -415,6 +674,40 @@ function App() {
                 </select>
               </div>
 
+              <div>
+                <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                  Kokoro Voice
+                </label>
+                <select
+                  disabled={isSessionActive || playbackBackend !== "kokoro"}
+                  value={voice}
+                  onChange={(e) => setVoice(e.target.value)}
+                  className="voyce-field"
+                >
+                  {kokoroVoices.map((voiceName) => (
+                    <option key={voiceName} value={voiceName}>
+                      {voiceName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                  Speech Speed: {ttsSpeed.toFixed(2)}x
+                </label>
+                <input
+                  type="range"
+                  min="0.75"
+                  max="1.25"
+                  step="0.05"
+                  disabled={isSessionActive || playbackBackend !== "kokoro"}
+                  value={ttsSpeed}
+                  onChange={(e) => setTtsSpeed(Number(e.target.value))}
+                  className="w-full accent-purple-500"
+                />
+              </div>
+
               <button
                 type="button"
                 role="switch"
@@ -442,6 +735,83 @@ function App() {
                     </span>
                   </span>
                 </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="voyce-panel rounded-3xl p-5 sm:p-6">
+            <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
+              <Brain className="w-4 h-4 text-purple-400" />
+              <span>Memory Notes</span>
+            </h2>
+
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={memoryDraft}
+                  onChange={(e) => setMemoryDraft(e.target.value)}
+                  className="voyce-field"
+                  placeholder="Save a local note"
+                />
+                <button
+                  onClick={handleSaveMemory}
+                  disabled={!isConnected || !memoryDraft.trim()}
+                  className="touch-button shrink-0 bg-zinc-950 border border-zinc-850 hover:bg-zinc-900 disabled:opacity-50 px-3 rounded-xl text-zinc-300"
+                  aria-label="Save memory note"
+                  title="Save memory note"
+                >
+                  <Save className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {memoryFacts.length === 0 ? (
+                  <p className="text-xs text-zinc-500 leading-relaxed">
+                    No saved notes yet.
+                  </p>
+                ) : (
+                  memoryFacts.map((fact) => (
+                    <div key={fact.id} className="memory-row">
+                      <input
+                        type="checkbox"
+                        checked={selectedMemoryIds.has(fact.id)}
+                        onChange={() => toggleMemorySelection(fact.id)}
+                        aria-label="Include note in Markdown export"
+                      />
+                      <input
+                        type="text"
+                        value={fact.text}
+                        onChange={(e) => {
+                          const text = e.target.value;
+                          setMemoryFacts((facts) =>
+                            facts.map((item) =>
+                              item.id === fact.id ? { ...item, text } : item
+                            )
+                          );
+                        }}
+                        onBlur={(e) => handleUpdateMemory(fact.id, e.target.value)}
+                        className="memory-edit"
+                      />
+                      <button
+                        onClick={() => handleDeleteMemory(fact.id)}
+                        className="memory-icon-button"
+                        aria-label="Delete memory note"
+                        title="Delete memory note"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <button
+                onClick={handleExportMarkdown}
+                className="touch-button w-full bg-zinc-950 border border-zinc-850 hover:bg-zinc-900 px-4 rounded-xl text-sm font-bold tracking-wide flex items-center justify-center space-x-2 text-zinc-300 transition-all"
+              >
+                <Download className="w-4 h-4" />
+                <span>EXPORT .MD</span>
               </button>
             </div>
           </div>
