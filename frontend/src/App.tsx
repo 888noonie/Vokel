@@ -81,9 +81,13 @@ function App() {
   const [playbackBackend, setPlaybackBackend] = useState("kokoro");
   const [voice, setVoice] = useState("af_heart");
   const [ttsSpeed, setTtsSpeed] = useState(1);
+  const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const previewingVoiceRef = useRef<string | null>(null);
+  const previewAudioContextRef = useRef<AudioContext | null>(null);
+  const previewPlaybackTimeRef = useRef(0);
   const toolAudioContextRef = useRef<AudioContext | null>(null);
   const toolNoiseSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const toolNoiseGainRef = useRef<GainNode | null>(null);
@@ -95,6 +99,7 @@ function App() {
   useEffect(() => {
     return () => {
       stopToolCue();
+      stopVoicePreview();
       if (socketRef.current) {
         socketRef.current.close();
       }
@@ -165,6 +170,37 @@ function App() {
     toolNoiseGainRef.current = null;
   };
 
+  const playPreviewAudio = async (blob: Blob) => {
+    const arrayBuffer = await blob.arrayBuffer();
+    const float32Data = new Float32Array(arrayBuffer);
+    if (float32Data.length === 0) return;
+
+    if (!previewAudioContextRef.current) {
+      previewAudioContextRef.current = new AudioContext({ sampleRate: 24_000 });
+    }
+    const audioContext = previewAudioContextRef.current;
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+
+    const buffer = audioContext.createBuffer(1, float32Data.length, audioContext.sampleRate);
+    buffer.getChannelData(0).set(float32Data);
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+
+    const startTime = Math.max(audioContext.currentTime, previewPlaybackTimeRef.current);
+    source.start(startTime);
+    previewPlaybackTimeRef.current = startTime + buffer.duration;
+  };
+
+  const stopVoicePreview = () => {
+    previewingVoiceRef.current = null;
+    setPreviewingVoice(null);
+    previewPlaybackTimeRef.current = 0;
+  };
+
   const handleConnect = () => {
     if (isConnected) {
       if (socketRef.current) socketRef.current.close();
@@ -187,6 +223,7 @@ function App() {
       setStatus("idle");
       setIsPaused(false);
       stopToolCue();
+      stopVoicePreview();
       stopStreaming();
     };
 
@@ -195,6 +232,13 @@ function App() {
     };
 
     socket.onmessage = async (event) => {
+      if (event.data instanceof Blob) {
+        if (previewingVoiceRef.current) {
+          await playPreviewAudio(event.data);
+        }
+        return;
+      }
+
       if (typeof event.data === "string") {
         // Handle JSON messages from server
         const data = JSON.parse(event.data);
@@ -214,6 +258,7 @@ function App() {
             setStatus("idle");
             setIsPaused(false);
             stopToolCue();
+            stopVoicePreview();
             stopStreaming();
             break;
 
@@ -236,6 +281,19 @@ function App() {
             });
             break;
           }
+
+          case "voice_preview_started":
+            previewingVoiceRef.current = data.voice as string;
+            setPreviewingVoice(data.voice as string);
+            previewPlaybackTimeRef.current = 0;
+            break;
+
+          case "voice_preview_finished":
+            window.setTimeout(stopVoicePreview, 250);
+            if (data.error) {
+              setError(`Voice preview failed: ${data.error}`);
+            }
+            break;
 
           case "partial_transcript":
             setMessages((prev) => {
@@ -426,6 +484,20 @@ function App() {
 
   const handleUpdateMemory = (id: number, text: string) => {
     sendControl("memory_update", { id, text });
+  };
+
+  const handlePreviewVoice = (voiceName: string) => {
+    if (!socketRef.current || !isConnected || isSessionActive) return;
+    setError(null);
+    setVoice(voiceName);
+    previewingVoiceRef.current = voiceName;
+    setPreviewingVoice(voiceName);
+    previewPlaybackTimeRef.current = 0;
+    socketRef.current.send(JSON.stringify({
+      type: "preview_voice",
+      voice: voiceName,
+      tts_speed: ttsSpeed,
+    }));
   };
 
   const handleDeleteMemory = (id: number) => {
@@ -690,6 +762,46 @@ function App() {
                     </option>
                   ))}
                 </select>
+                <div className="mt-3 max-h-44 overflow-y-auto rounded-2xl border border-zinc-850 bg-zinc-950/50 p-2">
+                  <div className="grid grid-cols-1 gap-1.5">
+                    {kokoroVoices.map((voiceName) => {
+                      const isSelected = voiceName === voice;
+                      const isPreviewing = previewingVoice === voiceName;
+                      return (
+                        <div
+                          key={voiceName}
+                          className={`flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 text-xs transition ${
+                            isSelected
+                              ? "border-purple-500/35 bg-purple-500/10 text-purple-100"
+                              : "border-zinc-850 bg-zinc-950/50 text-zinc-400"
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            disabled={isSessionActive || playbackBackend !== "kokoro"}
+                            onClick={() => setVoice(voiceName)}
+                            className="min-h-0 flex-1 text-left font-mono disabled:opacity-50"
+                          >
+                            {voiceName}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!isConnected || isSessionActive || playbackBackend !== "kokoro"}
+                            onClick={() => handlePreviewVoice(voiceName)}
+                            className="min-h-0 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-300 transition hover:border-purple-500/40 hover:text-purple-200 disabled:opacity-40"
+                            aria-label={`Preview ${voiceName}`}
+                            title={`Preview ${voiceName}`}
+                          >
+                            <Play className={`h-3.5 w-3.5 ${isPreviewing ? "animate-pulse text-purple-300" : ""}`} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+                  Preview uses a short local Kokoro sample and does not touch transcript or memory.
+                </p>
               </div>
 
               <div>

@@ -329,6 +329,42 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             "message": f"Unsupported mode: {session_mode}",
                         })
 
+                elif msg_type == "preview_voice":
+                    voice = str(data.get("voice", "af_heart"))
+                    if voice not in KOKORO_VOICES:
+                        await send_json({
+                            "type": "error",
+                            "message": f"Unknown Kokoro voice: {voice}",
+                        })
+                        continue
+                    tts_speed = float(data.get("tts_speed", 1.0))
+                    tts_speed = min(1.25, max(0.75, tts_speed))
+                    sample_text = str(
+                        data.get(
+                            "text",
+                            "Hello, I am Voyce. Interrupt me anytime and I will stop listening.",
+                        )
+                    )
+                    await send_json({"type": "voice_preview_started", "voice": voice})
+                    try:
+                        preview_sink = KokoroPlaybackSink(voice=voice, speed=tts_speed)
+                        async for samples, sample_rate in preview_sink.kokoro.create_stream(
+                            sanitize_for_speech(sample_text),
+                            preview_sink.voice,
+                            preview_sink.speed,
+                            "en-us",
+                        ):
+                            samples_f32 = np.asarray(samples, dtype=np.float32)
+                            await send_bytes(samples_f32.tobytes())
+                        await send_json({"type": "voice_preview_finished", "voice": voice})
+                    except Exception as e:
+                        logger.warning(f"Voice preview failed: {e}")
+                        await send_json({
+                            "type": "voice_preview_finished",
+                            "voice": voice,
+                            "error": str(e),
+                        })
+
                 elif msg_type == "stop_session":
                     if local_loop_task and not local_loop_task.done():
                         local_loop_task.cancel()

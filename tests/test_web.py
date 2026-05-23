@@ -150,3 +150,33 @@ def test_websocket_barge_in_bypasses(
         websocket.send_bytes(np.zeros(800, dtype=np.float32).tobytes())
         res = receive_expected(("partial_transcript", "stable_transcript"))
         assert res["type"] in ("partial_transcript", "stable_transcript")
+
+
+@patch("voyce.web.KokoroPlaybackSink")
+def test_websocket_voice_preview_does_not_start_session(mock_kokoro_class: MagicMock) -> None:
+    mock_kokoro = MagicMock()
+    mock_kokoro_class.return_value = mock_kokoro
+    mock_kokoro.voice = "af_heart"
+    mock_kokoro.speed = 1.0
+
+    async def dummy_kokoro_stream(*args: any, **kwargs: any):
+        yield np.zeros(1000, dtype=np.float32), 24000
+
+    mock_kokoro.kokoro.create_stream.return_value = dummy_kokoro_stream()
+
+    client = TestClient(app)
+    with client.websocket_connect("/api/ws") as websocket:
+        websocket.send_json({
+            "type": "preview_voice",
+            "voice": "af_heart",
+            "tts_speed": 1.0,
+        })
+
+        started = json.loads(websocket.receive_text())
+        assert started == {"type": "voice_preview_started", "voice": "af_heart"}
+
+        binary = websocket.receive_bytes()
+        assert len(binary) == 4000
+
+        finished = json.loads(websocket.receive_text())
+        assert finished == {"type": "voice_preview_finished", "voice": "af_heart"}
