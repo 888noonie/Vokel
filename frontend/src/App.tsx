@@ -89,8 +89,8 @@ function App() {
   const previewAudioContextRef = useRef<AudioContext | null>(null);
   const previewPlaybackTimeRef = useRef(0);
   const toolAudioContextRef = useRef<AudioContext | null>(null);
-  const toolNoiseSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const toolNoiseGainRef = useRef<GainNode | null>(null);
+  const toolCueOscillatorsRef = useRef<OscillatorNode[]>([]);
+  const toolCueGainRef = useRef<GainNode | null>(null);
 
   // Hook for audio streaming and local queue scheduling in browser mode
   const { startStreaming, stopStreaming, isStreaming, micVolume } = useAudioStreamer();
@@ -114,60 +114,60 @@ function App() {
   };
 
   const startToolCue = async () => {
-    if (toolNoiseSourceRef.current) return;
+    if (toolCueOscillatorsRef.current.length > 0) return;
 
     const audioContext = getToolAudioContext();
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
 
-    const buffer = audioContext.createBuffer(1, audioContext.sampleRate * 2, audioContext.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < data.length; i += 1) {
-      data[i] = Math.random() * 2 - 1;
-    }
-
-    const source = audioContext.createBufferSource();
-    const filter = audioContext.createBiquadFilter();
     const gain = audioContext.createGain();
+    const lowTone = audioContext.createOscillator();
+    const highTone = audioContext.createOscillator();
 
-    source.buffer = buffer;
-    source.loop = true;
-    filter.type = "lowpass";
-    filter.frequency.value = 900;
-    // 50% of a deliberately quiet cue bed, so the signal is present but does not mask speech.
-    gain.gain.value = 0.05;
+    lowTone.type = "sine";
+    highTone.type = "sine";
+    lowTone.frequency.value = 196;
+    highTone.frequency.value = 246.94;
 
-    source.connect(filter);
-    filter.connect(gain);
+    // A quiet tonal cue reads as "working" without the harsh static of white noise.
+    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.018, audioContext.currentTime + 0.08);
+
+    lowTone.connect(gain);
+    highTone.connect(gain);
     gain.connect(audioContext.destination);
-    source.start();
+    lowTone.start();
+    highTone.start();
 
-    toolNoiseSourceRef.current = source;
-    toolNoiseGainRef.current = gain;
+    toolCueOscillatorsRef.current = [lowTone, highTone];
+    toolCueGainRef.current = gain;
   };
 
   const stopToolCue = () => {
-    const source = toolNoiseSourceRef.current;
-    const gain = toolNoiseGainRef.current;
-    if (!source) return;
+    const oscillators = toolCueOscillatorsRef.current;
+    const gain = toolCueGainRef.current;
+    if (oscillators.length === 0) return;
 
-    if (gain && toolAudioContextRef.current) {
-      gain.gain.setTargetAtTime(0, toolAudioContextRef.current.currentTime, 0.04);
+    const audioContext = toolAudioContextRef.current;
+    if (gain && audioContext) {
+      gain.gain.setTargetAtTime(0.0001, audioContext.currentTime, 0.04);
     }
 
     window.setTimeout(() => {
-      try {
-        source.stop();
-      } catch {
-        // Source may already have stopped after a websocket close or interrupt.
-      }
-      source.disconnect();
+      oscillators.forEach((oscillator) => {
+        try {
+          oscillator.stop();
+        } catch {
+          // Source may already have stopped after a websocket close or interrupt.
+        }
+        oscillator.disconnect();
+      });
       gain?.disconnect();
     }, 120);
 
-    toolNoiseSourceRef.current = null;
-    toolNoiseGainRef.current = null;
+    toolCueOscillatorsRef.current = [];
+    toolCueGainRef.current = null;
   };
 
   const playPreviewAudio = async (blob: Blob) => {
@@ -228,7 +228,7 @@ function App() {
     };
 
     socket.onerror = () => {
-      setError("WebSocket connection failed. Ensure the Voyce server is running with --web.");
+      setError("WebSocket connection failed. Ensure the Vokel server is running with --web.");
     };
 
     socket.onmessage = async (event) => {
@@ -519,7 +519,7 @@ function App() {
   const handleExportMarkdown = () => {
     const selectedFacts = memoryFacts.filter((fact) => selectedMemoryIds.has(fact.id));
     const lines = [
-      "# Voyce Session Export",
+      "# Vokel Session Export",
       "",
       `Exported: ${new Date().toISOString()}`,
       "",
@@ -551,7 +551,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `voyce-session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
+    link.download = `vokel-session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -569,10 +569,10 @@ function App() {
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight bg-gradient-to-r from-zinc-100 to-zinc-400 bg-clip-text text-transparent leading-none">
-                Voyce
+                Vokel
               </h1>
               <p className="text-[10px] text-zinc-500 font-mono tracking-wider mt-0.5">
-                REAL-TIME VOICE LOOP
+                VOICE-INVOKED LOCAL INTELLIGENCE
               </p>
             </div>
           </div>
@@ -609,7 +609,7 @@ function App() {
         {/* Left column: Controls & settings */}
         <div className="space-y-5 lg:space-y-6">
           {/* Active Session Status Card */}
-          <div className="voyce-panel rounded-3xl p-5 sm:p-6">
+          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
             <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
               <Cpu className="w-4 h-4 text-purple-400" />
               <span>Session Control</span>
@@ -697,7 +697,7 @@ function App() {
           </div>
 
           {/* Model Configuration / Settings */}
-          <div className="voyce-panel rounded-3xl p-5 sm:p-6">
+          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
             <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
               <Settings className="w-4 h-4 text-purple-400" />
               <span>Model & Pipeline Specs</span>
@@ -713,7 +713,7 @@ function App() {
                   disabled={isSessionActive}
                   value={lmStudioUrl}
                   onChange={(e) => setLmStudioUrl(e.target.value)}
-                  className="voyce-field"
+                  className="vokel-field"
                 />
               </div>
 
@@ -726,7 +726,7 @@ function App() {
                   disabled={isSessionActive}
                   value={lmStudioModel}
                   onChange={(e) => setLmStudioModel(e.target.value)}
-                  className="voyce-field"
+                  className="vokel-field"
                 />
               </div>
 
@@ -738,7 +738,7 @@ function App() {
                   disabled={isSessionActive}
                   value={playbackBackend}
                   onChange={(e) => setPlaybackBackend(e.target.value)}
-                  className="voyce-field"
+                  className="vokel-field"
                 >
                   <option value="kokoro">Kokoro ONNX (Streaming synthesis)</option>
                   <option value="spd-say">Speech Dispatcher (spd-say CLI)</option>
@@ -755,7 +755,7 @@ function App() {
                     disabled={isSessionActive || playbackBackend !== "kokoro"}
                     value={voice}
                     onChange={(e) => setVoice(e.target.value)}
-                    className="voyce-field"
+                    className="vokel-field"
                   >
                     {kokoroVoices.map((voiceName) => (
                       <option key={voiceName} value={voiceName}>
@@ -842,7 +842,7 @@ function App() {
                 aria-checked={memoryEnabled}
                 disabled={isSessionActive}
                 onClick={() => setMemoryEnabled((enabled) => !enabled)}
-                className="touch-button voyce-panel-subtle w-full rounded-2xl px-4 py-3 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
+                className="touch-button vokel-panel-subtle w-full rounded-2xl px-4 py-3 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
               >
                 <span className="flex items-center justify-between gap-4">
                   <span>
@@ -851,7 +851,7 @@ function App() {
                       Conversation Recall
                     </span>
                     <span className="block mt-1 leading-normal">
-                      Off by default. When enabled, Voyce can use saved local notes from this machine.
+                      Off by default. When enabled, Vokel can use saved local notes from this machine.
                     </span>
                   </span>
                   <span className="flex shrink-0 flex-col items-end gap-1">
@@ -867,7 +867,7 @@ function App() {
             </div>
           </div>
 
-          <div className="voyce-panel rounded-3xl p-5 sm:p-6">
+          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
             <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
               <Brain className="w-4 h-4 text-purple-400" />
               <span>Memory Notes</span>
@@ -879,7 +879,7 @@ function App() {
                   type="text"
                   value={memoryDraft}
                   onChange={(e) => setMemoryDraft(e.target.value)}
-                  className="voyce-field"
+                  className="vokel-field"
                   placeholder="Save a local note"
                 />
                 <button

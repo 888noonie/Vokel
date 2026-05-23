@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from voyce.memory import MemoryEntry, SQLiteMemoryStore, build_memory_context
+from vokel.memory import MemoryEntry, SQLiteMemoryStore, build_memory_context
 
 
 class SQLiteMemoryStoreTests(unittest.IsolatedAsyncioTestCase):
@@ -75,12 +75,12 @@ class SQLiteMemoryStoreTests(unittest.IsolatedAsyncioTestCase):
 
     def test_build_memory_context_formats_facts(self) -> None:
         # Covered through SQLite retrieval above; this asserts the prompt shape stays compact.
-        entry = SQLiteMemoryStoreTests._fact_entry("Voyce should avoid Bluetooth for now.")
+        entry = SQLiteMemoryStoreTests._fact_entry("Vokel should avoid Bluetooth for now.")
 
         context = build_memory_context([entry], max_chars=200)
 
         self.assertIn("Relevant saved context", context)
-        self.assertIn("- Voyce should avoid Bluetooth for now.", context)
+        self.assertIn("- Vokel should avoid Bluetooth for now.", context)
 
     @staticmethod
     def _fact_entry(text: str) -> MemoryEntry:

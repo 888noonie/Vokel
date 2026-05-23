@@ -91,7 +91,7 @@ def ensure_asset(asset: ModelAsset) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Download local model assets for Voyce.")
+    parser = argparse.ArgumentParser(description="Download local model assets for Vokel.")
     parser.add_argument(
         "models",
         nargs="*",

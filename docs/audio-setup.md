@@ -173,7 +173,7 @@ python3 scripts/vad_probe.py --device 8 --threshold 0.25 --input-gain 4
 ```
 
 On the first Pop!_OS test machine, PipeWire/Pulse input had a large DC offset.
-Voyce now removes DC offset before VAD by default. If RMS looks loud but VAD never
+Vokel now removes DC offset before VAD by default. If RMS looks loud but VAD never
 detects speech, check `raw_mean` in `scripts/vad_probe.py` and use `--input-gain`
 to lift the centered signal.
 

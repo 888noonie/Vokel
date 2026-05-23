@@ -1,6 +1,6 @@
 import unittest
 
-from voyce.audio_profiles import get_audio_profile, list_audio_profiles
+from vokel.audio_profiles import get_audio_profile, list_audio_profiles
 
 
 class AudioProfileTests(unittest.TestCase):

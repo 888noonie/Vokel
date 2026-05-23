@@ -5,7 +5,7 @@ remains the design record; verification steps still apply when changing the
 streaming path.
 
 This plan updates the earlier streaming-ASR sketch so it stays aligned with the
-current Voyce architecture, `AGENTS.md`, and the Phase 3 exit criteria in
+current Vokel architecture, `AGENTS.md`, and the Phase 3 exit criteria in
 `ROADMAP.md`.
 
 ## Goals
@@ -51,7 +51,7 @@ the ASR implementation.
 
 ### 2. Add a streaming turn producer in the audio layer
 
-Introduce a `StreamingTurnProducer` in `src/voyce/audio.py` that implements the
+Introduce a `StreamingTurnProducer` in `src/vokel/audio.py` that implements the
 existing `TurnProducer` protocol.
 
 Responsibilities:

@@ -2,15 +2,15 @@
 
 :root {
   color-scheme: dark;
-  --voyce-bg: #050509;
-  --voyce-panel: rgba(24, 24, 31, 0.78);
-  --voyce-panel-strong: rgba(14, 14, 19, 0.92);
-  --voyce-border: rgba(161, 161, 170, 0.14);
-  --voyce-border-strong: rgba(216, 180, 254, 0.3);
-  --voyce-text-soft: #a1a1aa;
-  --voyce-purple: #a855f7;
-  --voyce-violet: #7c3aed;
-  --voyce-glow: 0 24px 80px rgba(124, 58, 237, 0.16);
+  --vokel-bg: #050509;
+  --vokel-panel: rgba(24, 24, 31, 0.78);
+  --vokel-panel-strong: rgba(14, 14, 19, 0.92);
+  --vokel-border: rgba(161, 161, 170, 0.14);
+  --vokel-border-strong: rgba(216, 180, 254, 0.3);
+  --vokel-text-soft: #a1a1aa;
+  --vokel-purple: #a855f7;
+  --vokel-violet: #7c3aed;
+  --vokel-glow: 0 24px 80px rgba(124, 58, 237, 0.16);
 }
 
 * {
@@ -23,7 +23,7 @@ body {
   background:
     radial-gradient(circle at 12% 8%, rgba(124, 58, 237, 0.24), transparent 32rem),
     radial-gradient(circle at 78% 0%, rgba(59, 130, 246, 0.12), transparent 30rem),
-    var(--voyce-bg);
+    var(--vokel-bg);
   text-rendering: optimizeLegibility;
 }
 
@@ -45,22 +45,22 @@ textarea {
   margin-inline: auto;
 }
 
-.voyce-panel {
-  border: 1px solid var(--voyce-border);
-  background: linear-gradient(180deg, rgba(39, 39, 48, 0.78), var(--voyce-panel));
-  box-shadow: var(--voyce-glow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+.vokel-panel {
+  border: 1px solid var(--vokel-border);
+  background: linear-gradient(180deg, rgba(39, 39, 48, 0.78), var(--vokel-panel));
+  box-shadow: var(--vokel-glow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   backdrop-filter: blur(18px);
 }
 
-.voyce-panel-subtle {
+.vokel-panel-subtle {
   border: 1px solid rgba(161, 161, 170, 0.1);
-  background: var(--voyce-panel-strong);
+  background: var(--vokel-panel-strong);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
-.voyce-field {
+.vokel-field {
   width: 100%;
-  border: 1px solid var(--voyce-border);
+  border: 1px solid var(--vokel-border);
   border-radius: 0.9rem;
   background: rgba(5, 5, 9, 0.72);
   color: #d4d4d8;
@@ -71,12 +71,12 @@ textarea {
   transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 
-.voyce-field:focus {
-  border-color: var(--voyce-border-strong);
+.vokel-field:focus {
+  border-color: var(--vokel-border-strong);
   box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.12);
 }
 
-.voyce-field:disabled {
+.vokel-field:disabled {
   opacity: 0.55;
 }
 
@@ -93,7 +93,7 @@ textarea {
   width: 3.2rem;
   height: 1.75rem;
   border-radius: 999px;
-  border: 1px solid var(--voyce-border);
+  border: 1px solid var(--vokel-border);
   background: rgba(63, 63, 70, 0.72);
   padding: 0.18rem;
   transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
@@ -101,7 +101,7 @@ textarea {
 
 .recall-switch[data-enabled="true"] {
   border-color: rgba(168, 85, 247, 0.5);
-  background: linear-gradient(90deg, var(--voyce-violet), var(--voyce-purple));
+  background: linear-gradient(90deg, var(--vokel-violet), var(--vokel-purple));
   box-shadow: 0 0 26px rgba(168, 85, 247, 0.24);
 }
 
@@ -133,7 +133,7 @@ textarea {
   width: 1rem;
   height: 1rem;
   min-height: 1rem;
-  accent-color: var(--voyce-purple);
+  accent-color: var(--vokel-purple);
 }
 
 .memory-edit {

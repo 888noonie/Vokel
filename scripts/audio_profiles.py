@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from voyce.audio_profiles import list_audio_profiles
+from vokel.audio_profiles import list_audio_profiles
 
 
 def main() -> None:

@@ -2,7 +2,7 @@ import sys
 import unittest
 import asyncio
 
-from voyce.playback import (
+from vokel.playback import (
     SubprocessPlaybackConfig,
     SubprocessPlaybackSink,
     available_playback_backends,
@@ -46,6 +46,18 @@ class SpeechSanitizerTests(unittest.TestCase):
         self.assertEqual(
             sanitize_for_speech("Read [BBC News](https://www.bbc.com/news)."),
             "Read BBC News. Link available in transcript.",
+        )
+
+    def test_converts_markdown_images_to_speakable_caption(self):
+        self.assertEqual(
+            sanitize_for_speech("![sunset over mountains](https://images.unsplash.com/photo-abc)\nA beautiful view."),
+            "sunset over mountains. Image shown in transcript. A beautiful view.",
+        )
+
+    def test_converts_gif_markdown_to_speakable_hint(self):
+        self.assertEqual(
+            sanitize_for_speech("![gif:mind blown](https://media.giphy.com/abc.gif)\nPowered by GIPHY"),
+            "GIF shown in transcript. Powered by GIPHY",
         )
 
 

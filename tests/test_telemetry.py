@@ -1,6 +1,6 @@
 import unittest
 
-from voyce.telemetry import LatencyTrace
+from vokel.telemetry import LatencyTrace
 
 
 class LatencyTraceTests(unittest.TestCase):

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from voyce.cli import build_parser, run
+from vokel.cli import build_parser, run
 
 
 class CliMemoryTests(unittest.IsolatedAsyncioTestCase):

@@ -16,30 +16,30 @@ saved context without turning recall into a latency dependency.
 ## CLI
 
 ```bash
-python3 -m voyce.cli "What did we discuss about orchids?" --memory
+python3 -m vokel.cli "What did we discuss about orchids?" --memory
 ```
 
 Optional controls:
 
 ```bash
-python3 -m voyce.cli "Remind me what matters for latency." \
+python3 -m vokel.cli "Remind me what matters for latency." \
   --memory \
-  --memory-db data/voyce-memory.sqlite3 \
+  --memory-db data/vokel-memory.sqlite3 \
   --memory-results 3
 ```
 
 Save notes without calling the model:
 
 ```bash
-python3 -m voyce.cli --remember "Avoid Bluetooth output for latency benchmarks."
-python3 -m voyce.cli --remember "Default desktop audio profile is laptop-mic-headphones."
+python3 -m vokel.cli --remember "Avoid Bluetooth output for latency benchmarks."
+python3 -m vokel.cli --remember "Default desktop audio profile is laptop-mic-headphones."
 ```
 
 Inspect or clear saved context:
 
 ```bash
-python3 -m voyce.cli --memory-list
-python3 -m voyce.cli --memory-clear
+python3 -m vokel.cli --memory-list
+python3 -m vokel.cli --memory-clear
 ```
 
 These commands operate on `--memory-db` too, so separate experiments can keep

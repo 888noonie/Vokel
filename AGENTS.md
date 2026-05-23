@@ -1,10 +1,10 @@
 # AGENTS
 
-This file keeps human and AI contributors aligned while Voyce is still small enough to steer deliberately.
+This file keeps human and AI contributors aligned while Vokel is still small enough to steer deliberately.
 
 ## Product Test
 
-Voyce must preserve the live conversation loop:
+Vokel must preserve the live conversation loop:
 
 You speak. It answers. You interrupt. It stops. It listens again. No button.
 
@@ -20,15 +20,18 @@ Every architectural choice should protect that loop.
 ## Engineering Rules
 
 - Prefer small, measurable slices over large feature drops.
-- Keep ASR, LLM, and TTS behind explicit interfaces.
+- Keep ASR, LLM, TTS, and tools behind explicit interfaces.
 - Add latency marks before optimizing a path.
 - Keep every stream cancellable.
-- Do not let microphone, playback, or model code leak through the whole system.
+- Do not let microphone, playback, model, or tool code leak through the whole system.
+- Register new external capabilities as `ToolDefinition` entries in the `ToolRegistry`.
+- Sanitize LLM output for TTS through the `sanitize_for_speech` path; never read raw Markdown or URLs aloud.
+- Use deterministic forced tool execution for capabilities that small models cannot reliably self-invoke.
 - Prefer named audio profiles over scattering one-off VAD settings through commands.
 - Verify Pulse/PipeWire route availability before trusting headset profile benchmarks.
 - Use `laptop-mic-headphones` as the default desktop dev profile until a true headset mic route is available.
 - Preserve clear listen/capture cues so manual audio tests start from a fair point.
-- Avoid committing model weights, generated audio, caches, or local build notes.
+- Avoid committing model weights, generated audio, caches, API keys, or local build notes.
 - Run `python3 -m pytest -q` before publishing code changes.
 
 ## Latency Priorities

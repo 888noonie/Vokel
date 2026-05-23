@@ -7,15 +7,15 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from voyce.config import LmStudioConfig
-from voyce.engine import ConversationEngine
-from voyce.events import TextDeltaEvent
-from voyce.web_search import create_default_registry
-from voyce.inference import ChatMessage, LocalInferenceClient
-from voyce.playback import PlaybackSink, build_playback_sink
-from voyce.progress import ConsoleProgressObserver
-from voyce.telemetry import LatencyTrace
-from voyce.turns import AsrEngine, AudioTurn, PassthroughAsr, TextTurnProducer, TurnProducer
+from vokel.config import LmStudioConfig
+from vokel.engine import ConversationEngine
+from vokel.events import TextDeltaEvent
+from vokel.web_search import create_default_registry
+from vokel.inference import ChatMessage, LocalInferenceClient
+from vokel.playback import PlaybackSink, build_playback_sink
+from vokel.progress import ConsoleProgressObserver
+from vokel.telemetry import LatencyTrace
+from vokel.turns import AsrEngine, AudioTurn, PassthroughAsr, TextTurnProducer, TurnProducer
 
 
 @dataclass(frozen=True)
@@ -144,8 +144,8 @@ async def run_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
 
 def _stst_profile_mic_config(args: argparse.Namespace) -> Any | None:
     """Resolve optional audio profile and enforce route guard when requested."""
-    from voyce.audio_profiles import get_audio_profile
-    from voyce.audio_routes import find_source, load_pulse_sources
+    from vokel.audio_profiles import get_audio_profile
+    from vokel.audio_routes import find_source, load_pulse_sources
 
     profile = get_audio_profile(args.audio_profile) if args.audio_profile else None
     profile_config = profile.mic if profile else None
@@ -168,7 +168,7 @@ def _stst_profile_mic_config(args: argparse.Namespace) -> Any | None:
 
 def mic_vad_config_for_stst_mic(args: argparse.Namespace, profile_mic: Any | None) -> Any:
     """Shared MicVadConfig for VAD-bounded and streaming desktop mic benchmarks."""
-    from voyce.audio import MicVadConfig
+    from vokel.audio import MicVadConfig
 
     return MicVadConfig(
         vad_model_path=args.vad_model,
@@ -210,7 +210,7 @@ def mic_vad_config_for_stst_mic(args: argparse.Namespace, profile_mic: Any | Non
 
 
 async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
-    from voyce.audio import SherpaOfflineAsr, SherpaOfflineAsrConfig, SileroVadTurnProducer
+    from vokel.audio import SherpaOfflineAsr, SherpaOfflineAsrConfig, SileroVadTurnProducer
 
     profile_config = _stst_profile_mic_config(args)
     producer = SileroVadTurnProducer(mic_vad_config_for_stst_mic(args, profile_config))
@@ -242,7 +242,7 @@ async def run_mic_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
 
 async def run_mic_streaming_lm_studio(args: argparse.Namespace) -> BenchmarkResult:
     """One turn: streaming Zipformer endpointing + async mic; same engine loop as Phase 1."""
-    from voyce.audio import AsynchronousMicStream, StreamingTurnProducer, create_streaming_asr
+    from vokel.audio import AsynchronousMicStream, StreamingTurnProducer, create_streaming_asr
 
     profile_config = _stst_profile_mic_config(args)
     mic_cfg = mic_vad_config_for_stst_mic(args, profile_config)
@@ -273,7 +273,7 @@ def print_table(result: BenchmarkResult) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Benchmark Voyce STST latency checkpoints.")
+    parser = argparse.ArgumentParser(description="Benchmark Vokel STST latency checkpoints.")
     parser.add_argument(
         "--mode",
         choices=("synthetic", "lm-studio", "mic-lm-studio", "mic-streaming-lm-studio"),
@@ -282,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--prompt",
-        default="Give one short response for the Voyce latency benchmark.",
+        default="Give one short response for the Vokel latency benchmark.",
     )
     parser.add_argument("--json", action="store_true", help="Print full JSON events.")
     parser.add_argument(
@@ -350,7 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--first-audio-ms", type=float, default=40)
     parser.add_argument(
         "--synthetic-tokens",
-        default="Voyce is alive,| measured,| and ready.",
+        default="Vokel is alive,| measured,| and ready.",
         help="Pipe-separated scripted tokens for synthetic mode.",
     )
     return parser

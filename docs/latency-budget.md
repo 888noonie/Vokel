@@ -1,6 +1,6 @@
 # Latency Budget
 
-Voyce optimizes for perceived conversational immediacy, not just raw throughput.
+Vokel optimizes for perceived conversational immediacy, not just raw throughput.
 
 ## Primary Checkpoints
 

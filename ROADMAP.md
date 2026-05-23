@@ -1,6 +1,6 @@
 # ROADMAP
 
-Voyce is built in measured stages. Each stage should produce a working loop and fresh latency numbers before the next layer is added.
+Vokel is built in measured stages. Each stage should produce a working loop and fresh latency numbers before the next layer is added.
 
 ## Phase 0: Desktop Reference Core
 
@@ -128,25 +128,104 @@ Exit check:
 
 Goal: add operator controls without weakening the no-button live conversation loop.
 
-- Voice selection through named TTS voices/profiles
-- Pause conversation without discarding the current session
-- Reset the active conversation state
-- Export transcript and selected memory notes to `.md`
-- Edit memory entries locally, with clear audit visibility
+Status: complete (first slice).
+
+- Voice selection through named TTS voices/profiles — done (28 Kokoro voices, per-voice preview, speed slider)
+- Pause conversation without discarding the current session — done
+- Reset the active conversation state — done
+- Export transcript and selected memory notes to `.md` — done
+- Edit memory entries locally, with clear audit visibility — done
 
 Exit check:
 
-- controls are available from the desktop UI/TUI
-- pause and reset do not break barge-in or listen/capture cues
-- exported Markdown excludes caches, model files, and generated audio
-- memory edits remain behind the `MemoryStore` interface
+- controls are available from the desktop UI/TUI — done
+- pause and reset do not break barge-in or listen/capture cues — verified
+- exported Markdown excludes caches, model files, and generated audio — verified
+- memory edits remain behind the `MemoryStore` interface — verified
+
+## Phase 5: Agent Tools
+
+Goal: let the local model use external capabilities without hallucinating results.
+
+Status: complete. Web search, image search, and GIF search all integrated with
+deterministic forced execution, hybrid synthesis, and rich transcript display.
+
+### Web Search (SerpApi DuckDuckGo)
+
+- Tool registry with JSON schema definitions — done (`ToolRegistry`, `ToolDefinition`)
+- `LocalInferenceClient` (renamed from `LmStudioClient`) — done, portable to llama.cpp/MLC LLM
+- Deterministic forced search for web/news/current queries — done
+- Hybrid synthesis: search evidence injected into model with strict prompt — done
+- Page scraping fallback when API snippets are generic — done
+- Raw evidence fallback when model hedges — done
+- Speech sanitization layer (Markdown, URLs, formatting stripped before TTS) — done
+- Tool-call audio cue (two-tone sine, not white noise) — done
+- Voice preview without starting a session — done
+
+### Image Search (Unsplash)
+
+- `search_image` tool with Unsplash API — done
+- Deterministic detection for "show me an image/picture/photo of" — done
+- Media synthesis: LLM gives brief spoken intro, transcript shows inline photo — done
+- TTS only speaks caption, not URLs or attribution — done
+- Unsplash attribution in transcript — done
+
+### GIF Search (Giphy)
+
+- `search_gif` tool with Giphy API — done
+- Deterministic detection for "gif", "meme", "sticker", "reaction", "make me laugh" — done
+- Context-aware follow-ups: short replies continue GIF topic from recent history — done
+- ASR-tolerant triggers: "show me a g" works when speech recognition truncates — done
+- Query extraction with filler-word stripping and 60-char hard cap — done
+- Playful LLM synthesis: model gives one-liner reaction, not metadata dump — done
+- Compact GIF card in transcript with purple border and GIF badge — done
+- TTS sanitizer strips GIF markdown to "GIF shown in transcript" — done
+
+### Shared media pipeline
+
+- Visual tool results (image/GIF) separated: transcript gets rich media, TTS gets caption only
+- Vokel custom favicon (purple pulse icon) with dedicated routes
+- Quiet uvicorn access log filter suppresses favicon/asset noise
+
+Exit check:
+
+- "What's the top news in France today?" returns real headlines with sources — verified
+- "Weather in France today" returns actual temperature data — verified (via page scrape)
+- "Show me an image of the Alps" shows inline photo with brief spoken intro — verified
+- "Show me a gif of mind blown" shows animated GIF with playful reaction — verified
+- Context follow-up "anything" after GIF conversation triggers new GIF — verified
+- Model cannot claim it cannot browse — synthesis prompt enforced
+- Fallback raw evidence always includes clickable links — verified
+- TTS never reads asterisks, URLs, Markdown, or media metadata aloud — sanitizer verified
+
+## Phase 6: Android Port
+
+Goal: move the proven event model to Pixel 8 Pro.
+
+- Android Foreground Service
+- Sherpa-ONNX Android VAD/ASR
+- Local model runner selected by measured device performance
+- Local TTS path
+- Persistent notification and permission flow
+
+Exit check:
+
+- airplane mode demo
+- screen-off or pocket-safe foreground service behavior
+- touchless interrupt and resume
 
 ## Open Decisions
 
 - First Android LLM runner: llama.cpp, MLC, Google AI Edge, or another measured runtime.
 - First ASR model family: SenseVoice, Moonshine, Whisper, or streaming Zipformer.
-- Echo handling strategy for barge-in while TTS is playing.
+- Echo cancellation strategy for hands-free barge-in on laptop speakers.
+- Richer search depth: full-page scraping vs. paid API tier vs. local cache.
 
 ## Resolved Decisions
 
 - Desktop TTS engine: **Kokoro ONNX** — streaming synthesis, 0.1 ms stop latency, no external process dependency.
+- Inference client naming: **LocalInferenceClient** — decoupled from LM Studio branding, portable to any OpenAI-compatible endpoint.
+- Tool-call audio cue: **two-tone sine** — white noise was too harsh; gentle tonal cue reads as "working" without masking speech.
+- Barge-in on laptop speakers: **button-based** — true hands-free interruption requires a headset or echo cancellation, which is deferred.
+- Visual media pipeline: **caption-only TTS** — transcript gets rich media (images, GIFs), TTS only speaks the LLM's brief intro. Never read URLs, attribution, or metadata aloud.
+- Rebranded from Voyce to **Vokel** — voice + invoke + local.

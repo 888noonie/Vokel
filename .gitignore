@@ -6,3 +6,5 @@ __pycache__/
 build-log.md
 models/
 data/
+Chat Sessions/
+frontend/dist/

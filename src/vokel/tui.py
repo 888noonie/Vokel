@@ -31,7 +31,7 @@ class InteractiveTextProducer:
 
 
 async def run_tui(args: argparse.Namespace) -> None:
-    print("Welcome to Voyce Interactive Loop.")
+    print("Welcome to Vokel Interactive Loop.")
     print(f"Using Playback Sink: {args.playback}")
     if args.playback == "kokoro":
         print(f"Using Kokoro voice: {args.voice}")
@@ -58,7 +58,7 @@ async def run_tui(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run an interactive Voyce CLI loop.")
+    parser = argparse.ArgumentParser(description="Run an interactive Vokel CLI loop.")
     parser.add_argument("--url", default=LmStudioConfig.url)
     parser.add_argument("--model", default=LmStudioConfig.model)
     parser.add_argument(

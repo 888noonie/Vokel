@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .audio import (
@@ -35,9 +36,25 @@ from .playback import (
 from .telemetry import LatencyTrace, TraceEvent
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("voyce.web")
+logger = logging.getLogger("vokel.web")
 
-app = FastAPI(title="Voyce Web Server")
+_FRONTEND_DIST = Path("frontend/dist")
+_FAVICON_PATH = _FRONTEND_DIST / "favicon.svg"
+
+
+class _QuietStaticAccessLogFilter(logging.Filter):
+    """Keep uvicorn access logs focused on API traffic, not favicon/assets."""
+
+    _SKIP_FRAGMENTS = ('"GET /favicon', '"GET /assets/')
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not any(fragment in message for fragment in self._SKIP_FRAGMENTS)
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietStaticAccessLogFilter())
+
+app = FastAPI(title="Vokel Web Server")
 
 # Allow CORS for development React servers
 app.add_middleware(
@@ -342,7 +359,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     sample_text = str(
                         data.get(
                             "text",
-                            "Hello, I am Voyce. Interrupt me anytime and I will stop listening.",
+                            "Hello, I am Vokel. Interrupt me anytime and I will stop talking.",
                         )
                     )
                     await send_json({"type": "voice_preview_started", "voice": voice})
@@ -555,13 +572,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await llm_client.__aexit__(None, None, None)
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon_ico() -> RedirectResponse:
+    return RedirectResponse(url="/favicon.svg", status_code=307)
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon_svg() -> FileResponse:
+    if not _FAVICON_PATH.is_file():
+        raise HTTPException(status_code=404, detail="favicon not found; run: make build")
+    return FileResponse(
+        _FAVICON_PATH,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
+    )
+
+
 # Mount static files to serve the built frontend
-frontend_dist = Path("frontend/dist")
-if frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="static")
+if _FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="static")
 else:
     @app.get("/")
     def read_root() -> dict[str, str]:
         return {
-            "message": "Voyce Backend API running. Please build the frontend React app in /frontend to view the UI."
+            "message": "Vokel Backend API running. Please build the frontend React app in /frontend to view the UI."
         }

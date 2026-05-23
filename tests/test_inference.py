@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from voyce.inference import parse_sse_delta
+from vokel.inference import parse_sse_delta
 
 
 class InferenceParsingTests(unittest.TestCase):

@@ -3,12 +3,12 @@ import unittest
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-from voyce.engine import ConversationEngine
-from voyce.events import Event, TextDeltaEvent, ToolCallEvent
-from voyce.inference import ChatMessage
-from voyce.memory import MemoryConfig, MemoryEntry
-from voyce.tools import ToolDefinition, ToolRegistry
-from voyce.turns import PassthroughAsr, TextTurnProducer
+from vokel.engine import ConversationEngine
+from vokel.events import Event, TextDeltaEvent, ToolCallEvent
+from vokel.inference import ChatMessage
+from vokel.memory import MemoryConfig, MemoryEntry
+from vokel.tools import ToolDefinition, ToolRegistry
+from vokel.turns import PassthroughAsr, TextTurnProducer
 
 
 class FakeLlm:
@@ -132,7 +132,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(memory.records, [("What did we decide about memory?", "Remembered.")])
         self.assertIn("memory_retrieval", engine.trace.summary_ms())
 
-    async def test_web_search_prompt_forces_search_before_generation(self) -> None:
+    async def test_web_search_prompt_uses_search_evidence_for_synthesis(self) -> None:
         queries: list[str] = []
 
         async def fake_search_web(query: str) -> str:
@@ -148,7 +148,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
                 func=fake_search_web,
             )
         )
-        llm: Any = FakeLlm([TextDeltaEvent("The model should not answer this.")])
+        llm: Any = FakeLlm([TextDeltaEvent("Based on the search results, story one is the lead.")])
         playback = RecordingPlayback()
         engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry)
 
@@ -160,9 +160,10 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
             await engine.close()
 
         self.assertEqual(queries, ["Search for the top UK political news results today."])
-        self.assertEqual(llm.messages, [])
+        self.assertEqual(len(llm.messages), 1)
+        self.assertIn("Search evidence:\nStory one. Story two. Story three.", llm.messages[0][-1]["content"])
         self.assertIn(
-            "I searched the web. Here are the top results I found: Story one. Story two. Story three.",
+            "Based on the search results, story one is the lead.",
             " ".join(playback.spoken),
         )
         messages = engine.history
@@ -175,6 +176,35 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
             },
             messages,
         )
+
+    async def test_web_search_synthesis_falls_back_to_raw_evidence(self) -> None:
+        async def fake_search_web(query: str) -> str:
+            return "1. BBC headline\n   https://www.bbc.com/news/example"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_web",
+                description="Search the web.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_web,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("I couldn't get the result right now.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry)
+
+        await engine.start()
+        try:
+            await engine.submit_turn("Find the top BBC headline today.")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        spoken = " ".join(playback.spoken)
+        self.assertIn("I searched the web.", spoken)
+        self.assertIn("BBC headline", spoken)
+        self.assertNotIn("couldn't get", spoken)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import re
+from html.parser import HTMLParser
+
 import httpx
 import xml.etree.ElementTree as ET
 
 from .tools import ToolDefinition, ToolRegistry
 
-# Explicitly hardcoding the key as per instructions
 SERPAPI_KEY = "06ec3a8ce0bd8d9476df80e7d6e249b82304969b5d45e74ea0df3a4d915e66db"
+
+_THIN_SNIPPET_MAX_LEN = 120
+_PAGE_SCRAPE_MAX_CHARS = 1200
+_PAGE_SCRAPE_TIMEOUT = 6.0
 
 
 async def search_duckduckgo(query: str) -> str:
@@ -23,7 +29,7 @@ async def search_duckduckgo(query: str) -> str:
         "q": query,
         "api_key": SERPAPI_KEY,
     }
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             response = await client.get(url, params=params)
             response.raise_for_status()
@@ -40,6 +46,11 @@ async def search_duckduckgo(query: str) -> str:
                 source = str(result.get("source") or "").strip()
                 date = str(result.get("date") or "").strip()
 
+                if _snippet_is_thin(snippet) and link:
+                    deeper = await _scrape_page_content(client, link)
+                    if deeper:
+                        snippet = deeper
+
                 metadata = " - ".join(part for part in (source, date) if part)
                 line = f"{index}. {title}"
                 if metadata:
@@ -52,6 +63,76 @@ async def search_duckduckgo(query: str) -> str:
             return "\n\n".join(snippets)
         except Exception as e:
             return f"Search failed: {e}"
+
+
+def _snippet_is_thin(snippet: str) -> bool:
+    if not snippet or len(snippet) < 50:
+        return True
+    thin_phrases = (
+        "is your online source",
+        "breaking news",
+        "get the latest",
+        "stay updated",
+        "latest news",
+        "top stories",
+        "detailed forecast including",
+    )
+    normalized = snippet.lower()
+    return any(phrase in normalized for phrase in thin_phrases)
+
+
+async def _scrape_page_content(client: httpx.AsyncClient, url: str) -> str:
+    try:
+        resp = await client.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Vokel/1.0)"},
+            follow_redirects=True,
+            timeout=_PAGE_SCRAPE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except Exception:
+        return ""
+
+    extractor = _ParagraphExtractor()
+    try:
+        extractor.feed(resp.text)
+    except Exception:
+        return ""
+
+    joined = " ".join(extractor.paragraphs)
+    if len(joined) > _PAGE_SCRAPE_MAX_CHARS:
+        joined = joined[:_PAGE_SCRAPE_MAX_CHARS].rsplit(" ", 1)[0] + "..."
+    return joined
+
+
+class _ParagraphExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.paragraphs: list[str] = []
+        self._in_p = False
+        self._buf: list[str] = []
+        self._skip_tags = {"script", "style", "nav", "footer", "header"}
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._skip_tags:
+            self._skip_depth += 1
+        if tag == "p" and self._skip_depth == 0:
+            self._in_p = True
+            self._buf = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._skip_tags and self._skip_depth > 0:
+            self._skip_depth -= 1
+        if tag == "p" and self._in_p:
+            self._in_p = False
+            text = re.sub(r"\s+", " ", "".join(self._buf)).strip()
+            if len(text) > 60:
+                self.paragraphs.append(text)
+
+    def handle_data(self, data: str) -> None:
+        if self._in_p:
+            self._buf.append(data)
 
 
 async def _maybe_search_bbc_rss(query: str) -> str:
@@ -130,6 +211,11 @@ def get_web_search_tool() -> ToolDefinition:
 
 
 def create_default_registry() -> ToolRegistry:
+    from .giphy_search import get_giphy_search_tool
+    from .image_search import get_image_search_tool
+
     registry = ToolRegistry()
     registry.register(get_web_search_tool())
+    registry.register(get_image_search_tool())
+    registry.register(get_giphy_search_tool())
     return registry

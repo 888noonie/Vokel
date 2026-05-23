@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from voyce.audio import SherpaOnlineAsr, SherpaOnlineAsrConfig, create_streaming_asr
-from voyce.turns import AudioTurn
+from vokel.audio import SherpaOnlineAsr, SherpaOnlineAsrConfig, create_streaming_asr
+from vokel.turns import AudioTurn
 
 
 class StreamingPhase3Tests(unittest.IsolatedAsyncioTestCase):
@@ -15,7 +15,7 @@ class StreamingPhase3Tests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(FileNotFoundError):
             create_streaming_asr(Path("/nonexistent/zipformer-dir-xyz"))
 
-    @patch("voyce.audio._require_audio_dependencies")
+    @patch("vokel.audio._require_audio_dependencies")
     @patch.object(Path, "is_file", return_value=True)
     async def test_sherpa_online_transcribe_returns_prefilled_text(
         self, _mock_is_file: MagicMock, mock_deps: MagicMock

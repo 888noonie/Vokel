@@ -1,6 +1,6 @@
 import unittest
 
-from voyce.text_chunker import PhraseChunker
+from vokel.text_chunker import PhraseChunker
 
 
 class PhraseChunkerTests(unittest.TestCase):

@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from benchmarks.stst_latency import run_mic_lm_studio
-from voyce.audio_routes import AudioSource
+from vokel.audio_routes import AudioSource
 
 
 class StstRouteGuardTests(unittest.IsolatedAsyncioTestCase):
@@ -23,7 +23,7 @@ class StstRouteGuardTests(unittest.IsolatedAsyncioTestCase):
             is_default=False,
         )
 
-        with patch("voyce.audio_routes.load_pulse_sources", return_value=[source]):
+        with patch("vokel.audio_routes.load_pulse_sources", return_value=[source]):
             with self.assertRaisesRegex(RuntimeError, "not usable"):
                 await run_mic_lm_studio(args)
 

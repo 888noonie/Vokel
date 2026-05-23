@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Voyce: Install All Dependencies",
+      "label": "Vokel: Install All Dependencies",
       "type": "shell",
       "command": "make install",
       "problemMatcher": [],
@@ -16,7 +16,7 @@
       }
     },
     {
-      "label": "Voyce: Build Frontend UI",
+      "label": "Vokel: Build Frontend UI",
       "type": "shell",
       "command": "make build",
       "problemMatcher": [],
@@ -30,7 +30,7 @@
       }
     },
     {
-      "label": "Voyce: Start Web Server & UI",
+      "label": "Vokel: Start Web Server & UI",
       "type": "shell",
       "command": "make start",
       "isBackground": true,
@@ -41,7 +41,7 @@
       }
     },
     {
-      "label": "Voyce: Stop Web Server",
+      "label": "Vokel: Stop Web Server",
       "type": "shell",
       "command": "make stop",
       "problemMatcher": [],
@@ -51,7 +51,7 @@
       }
     },
     {
-      "label": "Voyce: Run Python Tests",
+      "label": "Vokel: Run Python Tests",
       "type": "shell",
       "command": "make test",
       "problemMatcher": [],
@@ -61,7 +61,7 @@
       }
     },
     {
-      "label": "Voyce: Clean Caches & Builds",
+      "label": "Vokel: Clean Caches & Builds",
       "type": "shell",
       "command": "make clean",
       "problemMatcher": [],

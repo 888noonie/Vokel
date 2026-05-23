@@ -253,6 +253,8 @@ def sanitize_for_speech(text: str) -> str:
     """Convert display-oriented assistant text into calmer TTS input."""
 
     speech = html.unescape(text)
+    speech = re.sub(r"!\[gif:[^\]]*\]\([^)]+\)", "GIF shown in transcript.", speech)
+    speech = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1. Image shown in transcript.", speech)
     speech = MARKDOWN_LINK_RE.sub(r"\1. Link available in transcript.", speech)
     speech = URL_RE.sub(" Link available in transcript. ", speech)
     speech = re.sub(r"```[\s\S]*?```", " code block omitted. ", speech)

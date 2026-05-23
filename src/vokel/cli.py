@@ -15,7 +15,7 @@ from .turns import PassthroughAsr, TextTurnProducer
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run one Voyce turn or start the web app.")
+    parser = argparse.ArgumentParser(description="Run one Vokel turn or start the web app.")
     parser.add_argument("prompt", nargs="?", default="", help="Text prompt to send as the user turn.")
     parser.add_argument("--url", default=LmStudioConfig.url)
     parser.add_argument("--model", default=LmStudioConfig.model)
@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--memory",
         action="store_true",
-        help="Let Voyce use saved local context for this turn.",
+        help="Let Vokel use saved local context for this turn.",
     )
     parser.add_argument("--memory-db", default=str(MemoryConfig.path), help="Saved context file path.")
     parser.add_argument(
@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
 async def run(args: argparse.Namespace) -> None:
     if args.web:
         import uvicorn
-        config = uvicorn.Config("voyce.web:app", host=args.host, port=args.port, reload=args.reload)
+        config = uvicorn.Config("vokel.web:app", host=args.host, port=args.port, reload=args.reload)
         server = uvicorn.Server(config)
         await server.serve()
         return

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 from fastapi.testclient import TestClient
 
-from voyce.web import app
+from vokel.web import app
 
 
 def test_root_endpoint_returns_api_status() -> None:
@@ -18,12 +18,12 @@ def test_root_endpoint_returns_api_status() -> None:
         assert "<html" in response.text
     else:
         assert "message" in response.json()
-        assert "Voyce Backend API" in response.json()["message"]
+        assert "Vokel Backend API" in response.json()["message"]
 
 
-@patch("voyce.web.LocalInferenceClient")
-@patch("voyce.web.create_streaming_asr")
-@patch("voyce.web.KokoroPlaybackSink")
+@patch("vokel.web.LocalInferenceClient")
+@patch("vokel.web.create_streaming_asr")
+@patch("vokel.web.KokoroPlaybackSink")
 def test_websocket_browser_mode_flow(
     mock_kokoro_class: MagicMock,
     mock_create_asr: MagicMock,
@@ -105,9 +105,9 @@ def test_websocket_browser_mode_flow(
         assert res_stopped["type"] == "session_stopped"
 
 
-@patch("voyce.web.LocalInferenceClient")
-@patch("voyce.web.create_streaming_asr")
-@patch("voyce.web.KokoroPlaybackSink")
+@patch("vokel.web.LocalInferenceClient")
+@patch("vokel.web.create_streaming_asr")
+@patch("vokel.web.KokoroPlaybackSink")
 def test_websocket_barge_in_bypasses(
     mock_kokoro_class: MagicMock,
     mock_create_asr: MagicMock,
@@ -152,7 +152,7 @@ def test_websocket_barge_in_bypasses(
         assert res["type"] in ("partial_transcript", "stable_transcript")
 
 
-@patch("voyce.web.KokoroPlaybackSink")
+@patch("vokel.web.KokoroPlaybackSink")
 def test_websocket_voice_preview_does_not_start_session(mock_kokoro_class: MagicMock) -> None:
     mock_kokoro = MagicMock()
     mock_kokoro_class.return_value = mock_kokoro

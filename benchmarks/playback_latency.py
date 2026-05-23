@@ -6,14 +6,14 @@ import json
 import time
 from dataclasses import dataclass
 
-from voyce.playback import (
+from vokel.playback import (
     available_playback_backends,
     build_playback_sink,
 )
 
 
 LONG_TEXT = (
-    "Voyce playback interruption benchmark. This sentence is intentionally long "
+    "Vokel playback interruption benchmark. This sentence is intentionally long "
     "so there is enough time to interrupt the speech while it is still active."
 )
 
@@ -32,7 +32,7 @@ class PlaybackBenchmarkResult:
 def build_sink(backend: str):  # type: ignore[return-value]
     """Build a playback sink, including the benchmark-only 'fake' backend."""
     if backend == "fake":
-        from voyce.playback import SubprocessPlaybackConfig, SubprocessPlaybackSink
+        from vokel.playback import SubprocessPlaybackConfig, SubprocessPlaybackSink
 
         return SubprocessPlaybackSink(
             SubprocessPlaybackConfig(

@@ -1,6 +1,6 @@
 import unittest
 
-from voyce.turns import AudioTurn, PassthroughAsr, TextTurnProducer
+from vokel.turns import AudioTurn, PassthroughAsr, TextTurnProducer
 
 
 class TurnTests(unittest.IsolatedAsyncioTestCase):

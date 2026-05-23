@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-from voyce.audio_profiles import get_audio_profile, list_audio_profiles
-from voyce.audio_routes import find_source, load_pulse_sources, set_default_source
+from vokel.audio_profiles import get_audio_profile, list_audio_profiles
+from vokel.audio_routes import find_source, load_pulse_sources, set_default_source
 
 
 def print_sources(profile_name: str | None = None) -> int:

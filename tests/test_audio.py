@@ -1,6 +1,6 @@
 import unittest
 
-from voyce.audio import (
+from vokel.audio import (
     AudioDependencyError,
     MicVadConfig,
     SherpaOfflineAsrConfig,

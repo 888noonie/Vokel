@@ -9,8 +9,8 @@ from benchmarks.stst_latency import (
     build_parser,
     run_engine_benchmark,
 )
-from voyce.telemetry import LatencyTrace
-from voyce.turns import TextTurnProducer
+from vokel.telemetry import LatencyTrace
+from vokel.turns import TextTurnProducer
 
 
 class StstBenchmarkTests(unittest.IsolatedAsyncioTestCase):

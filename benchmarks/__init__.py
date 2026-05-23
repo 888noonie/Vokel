@@ -1,1 +1,1 @@
-"""Benchmark entry points for Voyce."""
+"""Benchmark entry points for Vokel."""

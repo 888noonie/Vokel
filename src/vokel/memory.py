@@ -12,7 +12,7 @@ from typing import Protocol
 @dataclass(frozen=True)
 class MemoryConfig:
     enabled: bool = False
-    path: Path = Path("data/voyce-memory.sqlite3")
+    path: Path = Path("data/vokel-memory.sqlite3")
     max_results: int = 3
     max_context_chars: int = 900
     scan_limit: int = 200

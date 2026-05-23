@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from voyce.audio_routes import find_source, parse_pulse_sources_json
+from vokel.audio_routes import find_source, parse_pulse_sources_json
 
 
 class AudioRoutesTests(unittest.TestCase):

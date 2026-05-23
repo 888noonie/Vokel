@@ -2,8 +2,8 @@ import io
 import unittest
 from contextlib import redirect_stdout
 
-from voyce.progress import ConsoleProgressObserver
-from voyce.telemetry import LatencyTrace
+from vokel.progress import ConsoleProgressObserver
+from vokel.telemetry import LatencyTrace
 
 
 class ProgressObserverTests(unittest.TestCase):

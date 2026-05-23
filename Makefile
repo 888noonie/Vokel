@@ -4,11 +4,11 @@ PORT ?= 8000
 HOST ?= 0.0.0.0
 
 help:
-	@echo "Voyce Project Commands:"
+	@echo "Vokel Project Commands:"
 	@echo "  make install       - Install Python backend dependencies and Frontend node modules"
 	@echo "  make build         - Compile TypeScript and bundle frontend assets using Vite"
 	@echo "  make start         - Start the FastAPI web application serving the React frontend"
-	@echo "  make stop          - Stop any active Voyce web server running on port $(PORT)"
+	@echo "  make stop          - Stop any active Vokel web server running on port $(PORT)"
 	@echo "  make dev-frontend  - Start the Vite local development server for frontend HMR"
 	@echo "  make test          - Run full Python test suite with pytest"
 	@echo "  make clean         - Clear built assets, node_modules, and virtualenv/python caches"
@@ -25,8 +25,8 @@ build:
 	cd frontend && npm run build
 
 start: build
-	@echo "Starting Voyce Web Server on http://$(HOST):$(PORT)..."
-	.venv/bin/python -m voyce.cli --web --host $(HOST) --port $(PORT)
+	@echo "Starting Vokel Web Server on http://$(HOST):$(PORT)..."
+	.venv/bin/python -m vokel.cli --web --host $(HOST) --port $(PORT)
 
 stop:
 	@echo "Stopping any process running on port $(PORT)..."

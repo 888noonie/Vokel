@@ -24,7 +24,7 @@ export const LatencyScoreboard: React.FC<LatencyScoreboardProps> = ({ metrics })
   };
 
   return (
-    <div className="voyce-panel rounded-3xl p-5 sm:p-6">
+    <div className="vokel-panel rounded-3xl p-5 sm:p-6">
       <h2 className="text-lg sm:text-xl font-semibold text-zinc-100 mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <span>Latency Scoreboard</span>
         <span className="text-xs font-normal text-zinc-500">Targets from docs/latency-budget.md</span>

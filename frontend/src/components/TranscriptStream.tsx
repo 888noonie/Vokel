@@ -14,8 +14,76 @@ interface TranscriptStreamProps {
 }
 
 const urlPattern = /(https?:\/\/[^\s)]+)/g;
+const imagePattern = /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g;
 
 function renderTextWithLinks(text: string) {
+  // First split on markdown images, then handle URLs in text fragments
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  // Reset regex state
+  imagePattern.lastIndex = 0;
+
+  while ((match = imagePattern.exec(text)) !== null) {
+    // Text before this image
+    if (match.index > lastIndex) {
+      parts.push(...renderUrlsInText(text.slice(lastIndex, match.index), lastIndex));
+    }
+
+    const rawAlt = match[1];
+    const src = match[2];
+    const isGif = rawAlt.startsWith("gif:");
+    const alt = isGif ? rawAlt.slice(4) : rawAlt;
+
+    parts.push(
+      isGif ? (
+        <figure key={`gif-${match.index}`} className="my-3 rounded-2xl overflow-hidden border border-purple-500/20 shadow-lg shadow-purple-500/10 bg-zinc-950/40 max-w-[280px]">
+          <img
+            src={src}
+            alt={alt}
+            className="w-full rounded-t-2xl"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
+          />
+          <div className="px-3 py-1.5 text-[10px] text-zinc-500 flex items-center justify-between">
+            <span className="truncate">{alt}</span>
+            <span className="shrink-0 font-mono text-purple-400/60">GIF</span>
+          </div>
+        </figure>
+      ) : (
+        <figure key={`img-${match.index}`} className="my-3 rounded-xl overflow-hidden border border-white/10 shadow-lg shadow-purple-500/5">
+          <img
+            src={src}
+            alt={alt}
+            loading="lazy"
+            className="w-full max-h-72 object-cover"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
+          />
+          {alt && (
+            <figcaption className="px-3 py-2 text-[11px] text-zinc-400 bg-zinc-950/60 leading-relaxed">
+              {alt}
+            </figcaption>
+          )}
+        </figure>
+      )
+    );
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Remaining text after last image
+  if (lastIndex < text.length) {
+    parts.push(...renderUrlsInText(text.slice(lastIndex), lastIndex));
+  }
+
+  return parts.length > 0 ? parts : [text];
+}
+
+function renderUrlsInText(text: string, keyOffset: number): React.ReactNode[] {
   return text.split(urlPattern).map((part, index) => {
     if (!part.match(urlPattern)) {
       return part;
@@ -25,7 +93,7 @@ function renderTextWithLinks(text: string) {
     const trailing = part.slice(href.length);
 
     return (
-      <React.Fragment key={`${href}-${index}`}>
+      <React.Fragment key={`url-${keyOffset}-${index}`}>
         <a
           href={href}
           target="_blank"
@@ -57,7 +125,7 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
   );
 
   return (
-    <div className="voyce-panel rounded-3xl p-5 sm:p-6 flex flex-col min-h-[360px] h-[52vh] max-h-[560px]">
+    <div className="vokel-panel rounded-3xl p-5 sm:p-6 flex flex-col min-h-[360px] h-[52vh] max-h-[560px]">
       <h2 className="text-lg sm:text-xl font-semibold text-zinc-100 mb-4 flex items-center justify-between border-b border-white/10 pb-3">
         <span>Live Transcript</span>
         <span className="text-xs bg-zinc-800 text-zinc-400 px-2 py-1 rounded-md font-mono uppercase">
