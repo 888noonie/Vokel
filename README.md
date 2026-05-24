@@ -113,6 +113,7 @@ keeps the Android port free to use its native SQLite layer later.
 - `docs/latency-budget.md` defines the STST timing targets.
 - `docs/memory.md` explains the opt-in recall path and timing budget.
 - `docs/agent-tools.md` explains the tool registry, hybrid web search, page scraping, image search, speech sanitization, and voice preview.
+- `docs/agent-extensions.md` explains Hermes gateway mode (Vokel as voice front-end).
 - `docs/model-matrix.md` tracks backend candidates before deeper integration.
 - `docs/audio-setup.md` explains the first real microphone benchmark path.
 

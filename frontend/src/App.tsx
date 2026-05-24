@@ -20,6 +20,7 @@ import {
   Image,
   Clapperboard,
   Wrench,
+  Bot,
 } from "lucide-react";
 import { LatencyScoreboard } from "./components/LatencyScoreboard";
 import { WaveformVisualizer } from "./components/WaveformVisualizer";
@@ -29,6 +30,7 @@ import { useAudioStreamer } from "./hooks/useAudioStreamer";
 import { playToolEndClick, playToolStartClick } from "./audio/toolCue";
 
 type Mode = "local" | "browser";
+type AgentBackend = "builtin" | "hermes";
 type Status = "idle" | "listening" | "generating" | "speaking" | "paused";
 
 interface MemoryFact {
@@ -94,6 +96,12 @@ function App() {
   const [toolWebEnabled, setToolWebEnabled] = useState(false);
   const [toolImageEnabled, setToolImageEnabled] = useState(false);
   const [toolGifEnabled, setToolGifEnabled] = useState(false);
+  const [agentBackend, setAgentBackend] = useState<AgentBackend>("builtin");
+  const [hermesUrl, setHermesUrl] = useState("http://127.0.0.1:8642");
+  const [hermesApiKey, setHermesApiKey] = useState("");
+  const [hermesSessionId, setHermesSessionId] = useState("");
+  const [hermesModel, setHermesModel] = useState("hermes-agent");
+  const [activeHermesSessionId, setActiveHermesSessionId] = useState<string | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
   const previewingVoiceRef = useRef<string | null>(null);
@@ -215,6 +223,14 @@ function App() {
             setIsSessionActive(true);
             setIsPaused(false);
             setStatus("listening");
+            if (typeof data.hermes_session_id === "string") {
+              setActiveHermesSessionId(data.hermes_session_id);
+              if (!hermesSessionId.trim()) {
+                setHermesSessionId(data.hermes_session_id);
+              }
+            } else {
+              setActiveHermesSessionId(null);
+            }
             if (data.mode === "browser") {
               startStreaming(socket);
             }
@@ -224,6 +240,7 @@ function App() {
             setIsSessionActive(false);
             setStatus("idle");
             setIsPaused(false);
+            setActiveHermesSessionId(null);
             void stopToolCue(false);
             stopVoicePreview();
             stopStreaming();
@@ -391,17 +408,22 @@ function App() {
       JSON.stringify({
         type: "start_session",
         mode,
+        agent_backend: agentBackend,
         url: lmStudioUrl,
         model: lmStudioModel,
+        hermes_url: hermesUrl,
+        hermes_api_key: hermesApiKey,
+        hermes_session_id: hermesSessionId.trim(),
+        hermes_model: hermesModel,
         playback: playbackBackend,
         voice,
         tts_speed: ttsSpeed,
-        memory: memoryEnabled,
-        auto_followup: autoFollowupEnabled,
+        memory: agentBackend === "builtin" && memoryEnabled,
+        auto_followup: agentBackend === "builtin" && autoFollowupEnabled,
         auto_followup_seconds: autoFollowupSeconds,
-        tool_web: toolWebEnabled,
-        tool_image: toolImageEnabled,
-        tool_gif: toolGifEnabled,
+        tool_web: agentBackend === "builtin" && toolWebEnabled,
+        tool_image: agentBackend === "builtin" && toolImageEnabled,
+        tool_gif: agentBackend === "builtin" && toolGifEnabled,
       })
     );
   };
@@ -629,7 +651,7 @@ function App() {
                 type="button"
                 role="switch"
                 aria-checked={autoFollowupEnabled}
-                disabled={isSessionActive}
+                disabled={isSessionActive || agentBackend === "hermes"}
                 onClick={() => setAutoFollowupEnabled((enabled) => !enabled)}
                 className="touch-button voyce-panel-subtle w-full rounded-2xl px-4 py-3 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
               >
@@ -659,7 +681,7 @@ function App() {
                   Follow-up Timer
                 </label>
                 <select
-                  disabled={isSessionActive || !autoFollowupEnabled}
+                  disabled={isSessionActive || !autoFollowupEnabled || agentBackend === "hermes"}
                   value={autoFollowupSeconds}
                   onChange={(e) => setAutoFollowupSeconds(Number(e.target.value))}
                   className="vokel-field"
@@ -721,6 +743,104 @@ function App() {
             </div>
           </div>
 
+          {/* Agent Extension */}
+          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
+            <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
+              <Bot className="w-4 h-4 text-purple-400" />
+              <span>Agent Extension</span>
+            </h2>
+
+            <p className="text-[11px] leading-relaxed text-zinc-500 mb-4">
+              Built-in uses LM Studio directly. Hermes mode makes Vokel the voice front-end while Hermes owns
+              reasoning, memory, and tools.
+            </p>
+
+            <div className="flex rounded-xl bg-zinc-950 p-1 border border-zinc-900 mb-4">
+              <button
+                disabled={isSessionActive}
+                onClick={() => setAgentBackend("builtin")}
+                className={`touch-button flex-1 rounded-lg text-xs font-semibold font-mono transition-all duration-200 ${
+                  agentBackend === "builtin"
+                    ? "bg-zinc-900 text-purple-400 border border-zinc-800 shadow"
+                    : "text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
+                }`}
+              >
+                BUILT-IN
+              </button>
+              <button
+                disabled={isSessionActive}
+                onClick={() => setAgentBackend("hermes")}
+                className={`touch-button flex-1 rounded-lg text-xs font-semibold font-mono transition-all duration-200 ${
+                  agentBackend === "hermes"
+                    ? "bg-zinc-900 text-purple-400 border border-zinc-800 shadow"
+                    : "text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
+                }`}
+              >
+                HERMES
+              </button>
+            </div>
+
+            {agentBackend === "hermes" && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                    Hermes Gateway URL
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isSessionActive}
+                    value={hermesUrl}
+                    onChange={(e) => setHermesUrl(e.target.value)}
+                    className="vokel-field"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                    API Key (optional)
+                  </label>
+                  <input
+                    type="password"
+                    disabled={isSessionActive}
+                    value={hermesApiKey}
+                    onChange={(e) => setHermesApiKey(e.target.value)}
+                    className="vokel-field"
+                    placeholder="Matches API_SERVER_KEY in ~/.hermes/.env"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                    Conversation ID (optional)
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isSessionActive}
+                    value={hermesSessionId}
+                    onChange={(e) => setHermesSessionId(e.target.value)}
+                    className="vokel-field"
+                    placeholder="Leave blank to start a new Hermes conversation"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                    Hermes Model Name
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isSessionActive}
+                    value={hermesModel}
+                    onChange={(e) => setHermesModel(e.target.value)}
+                    className="vokel-field"
+                  />
+                </div>
+                {activeHermesSessionId && (
+                  <p className="text-[11px] font-mono text-purple-300/90">
+                    Active conversation: {activeHermesSessionId}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Online Tools */}
           <div className="vokel-panel rounded-3xl p-5 sm:p-6">
             <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
@@ -729,7 +849,9 @@ function App() {
             </h2>
 
             <p className="text-[11px] leading-relaxed text-zinc-500 mb-4">
-              Enable tools the model can use during conversation. All off by default to keep responses fast and local.
+              {agentBackend === "hermes"
+                ? "Disabled in Hermes mode — Hermes gateway tools and MCP servers handle capabilities."
+                : "Enable tools the model can use during conversation. All off by default to keep responses fast and local."}
             </p>
 
             <div className="space-y-2">
@@ -743,7 +865,7 @@ function App() {
                   type="button"
                   role="switch"
                   aria-checked={state}
-                  disabled={isSessionActive}
+                  disabled={isSessionActive || agentBackend === "hermes"}
                   onClick={() => setter((v) => !v)}
                   className="touch-button voyce-panel-subtle w-full rounded-2xl px-4 py-2.5 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
                 >
@@ -783,7 +905,7 @@ function App() {
                 </label>
                 <input
                   type="text"
-                  disabled={isSessionActive}
+                  disabled={isSessionActive || agentBackend === "hermes"}
                   value={lmStudioUrl}
                   onChange={(e) => setLmStudioUrl(e.target.value)}
                   className="vokel-field"
@@ -796,7 +918,7 @@ function App() {
                 </label>
                 <input
                   type="text"
-                  disabled={isSessionActive}
+                  disabled={isSessionActive || agentBackend === "hermes"}
                   value={lmStudioModel}
                   onChange={(e) => setLmStudioModel(e.target.value)}
                   className="vokel-field"
@@ -913,7 +1035,7 @@ function App() {
                 type="button"
                 role="switch"
                 aria-checked={memoryEnabled}
-                disabled={isSessionActive}
+                disabled={isSessionActive || agentBackend === "hermes"}
                 onClick={() => setMemoryEnabled((enabled) => !enabled)}
                 className="touch-button vokel-panel-subtle w-full rounded-2xl px-4 py-3 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
               >

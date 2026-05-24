@@ -42,6 +42,7 @@ class LocalInferenceClient:
         self.config = config
         self._client = client
         self._owns_client = client is None
+        self._active_response: Any = None
 
     async def __aenter__(self) -> "LocalInferenceClient":
         if self._client is None:
@@ -56,9 +57,16 @@ class LocalInferenceClient:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        await self.cancel_active()
         if self._owns_client and self._client is not None:
             await self._client.aclose()
         self._client = None
+
+    async def cancel_active(self) -> None:
+        response = self._active_response
+        self._active_response = None
+        if response is not None:
+            await response.aclose()
 
     async def stream_chat(
         self, messages: Sequence[ChatMessage], tools: list[dict[str, Any]] | None = None
@@ -79,39 +87,43 @@ class LocalInferenceClient:
 
         active_tool_calls: dict[int, dict[str, Any]] = {}
 
-        async with self._client.stream("POST", self.config.url, json=payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if line.strip() == "data: [DONE]":
-                    break
-                delta = parse_sse_delta(line)
-                if not delta:
-                    continue
+        try:
+            async with self._client.stream("POST", self.config.url, json=payload) as response:
+                self._active_response = response
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line.strip() == "data: [DONE]":
+                        break
+                    delta = parse_sse_delta(line)
+                    if not delta:
+                        continue
 
-                if "content" in delta and delta["content"]:
-                    yield TextDeltaEvent(content=delta["content"])
+                    if "content" in delta and delta["content"]:
+                        yield TextDeltaEvent(content=delta["content"])
 
-                if "tool_calls" in delta:
-                    for tc in delta["tool_calls"]:
-                        index = tc.get("index")
-                        if index is None:
-                            continue
-                        
-                        if index not in active_tool_calls:
-                            active_tool_calls[index] = {
-                                "id": tc.get("id", ""),
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""}
-                            }
-                        
-                        if "id" in tc and tc["id"]:
-                            active_tool_calls[index]["id"] = tc["id"]
-                        
-                        fn = tc.get("function", {})
-                        if "name" in fn and fn["name"]:
-                            active_tool_calls[index]["function"]["name"] += fn["name"]
-                        if "arguments" in fn and fn["arguments"]:
-                            active_tool_calls[index]["function"]["arguments"] += fn["arguments"]
+                    if "tool_calls" in delta:
+                        for tc in delta["tool_calls"]:
+                            index = tc.get("index")
+                            if index is None:
+                                continue
+
+                            if index not in active_tool_calls:
+                                active_tool_calls[index] = {
+                                    "id": tc.get("id", ""),
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+
+                            if "id" in tc and tc["id"]:
+                                active_tool_calls[index]["id"] = tc["id"]
+
+                            fn = tc.get("function", {})
+                            if "name" in fn and fn["name"]:
+                                active_tool_calls[index]["function"]["name"] += fn["name"]
+                            if "arguments" in fn and fn["arguments"]:
+                                active_tool_calls[index]["function"]["arguments"] += fn["arguments"]
+        finally:
+            self._active_response = None
 
         # After streaming is done, yield completed tool calls
         for tc in active_tool_calls.values():

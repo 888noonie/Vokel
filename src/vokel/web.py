@@ -25,10 +25,12 @@ from .auto_followup import (
     clamp_auto_followup_seconds,
     DEFAULT_AUTO_FOLLOWUP_SECONDS,
 )
+from .agent_backend import AgentBackend
 from .config import LmStudioConfig
-from .engine import ConversationEngine
+from .engine import AgentMode, ConversationEngine
+from .hermes_client import HermesAgentClient, HermesConfig, check_gateway_health
 from .web_search import create_default_registry
-from .inference import LocalInferenceClient
+from .inference import InferenceError, LocalInferenceClient
 from .memory import MemoryConfig, SQLiteMemoryStore
 from .playback import (
     KOKORO_VOICES,
@@ -154,7 +156,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     # Keep track of active tasks and engines to clean them up on disconnect
     session_mode: str | None = None
     engine: ConversationEngine | None = None
-    llm_client: LocalInferenceClient | None = None
+    agent_client: AgentBackend | None = None
     local_loop_task: asyncio.Task[None] | None = None
     session_paused = False
     active_memory_store: SQLiteMemoryStore | None = None
@@ -243,11 +245,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         local_loop_task.cancel()
                     if engine:
                         await engine.close()
-                    if llm_client:
-                        await llm_client.__aexit__(None, None, None)
+                    if agent_client:
+                        await agent_client.__aexit__(None, None, None)
 
                     session_paused = False
-                    auto_followup_enabled = bool(data.get("auto_followup", True))
+                    agent_backend_name = str(data.get("agent_backend", "builtin")).strip().lower()
+                    if agent_backend_name not in ("builtin", "hermes"):
+                        agent_backend_name = "builtin"
+                    hermes_mode = agent_backend_name == "hermes"
+                    agent_mode: AgentMode = "hermes" if hermes_mode else "builtin"
+                    auto_followup_enabled = bool(data.get("auto_followup", True)) and not hermes_mode
                     auto_followup_seconds = clamp_auto_followup_seconds(
                         float(data.get("auto_followup_seconds", DEFAULT_AUTO_FOLLOWUP_SECONDS))
                     )
@@ -260,7 +267,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     tts_speed = float(data.get("tts_speed", 1.0))
                     tts_speed = min(1.25, max(0.75, tts_speed))
                     memory_config = MemoryConfig(
-                        enabled=bool(data.get("memory", False)),
+                        enabled=bool(data.get("memory", False)) and not hermes_mode,
                         path=Path(str(data.get("memory_db", MemoryConfig.path))),
                         max_results=int(data.get("memory_results", MemoryConfig.max_results)),
                     )
@@ -271,16 +278,40 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     memory_store = active_memory_store if memory_config.enabled else None
 
                     enabled_tools: set[str] = set()
-                    if data.get("tool_image"):
-                        enabled_tools.add("search_image")
-                    if data.get("tool_gif"):
-                        enabled_tools.add("search_gif")
-                    if data.get("tool_web"):
-                        enabled_tools.add("search_web")
+                    if not hermes_mode:
+                        if data.get("tool_image"):
+                            enabled_tools.add("search_image")
+                        if data.get("tool_gif"):
+                            enabled_tools.add("search_gif")
+                        if data.get("tool_web"):
+                            enabled_tools.add("search_web")
 
-                    lm_config = LmStudioConfig(url=url, model=model)
-                    llm_client = LocalInferenceClient(lm_config)
-                    await llm_client.__aenter__()
+                    if hermes_mode:
+                        hermes_base = str(
+                            data.get("hermes_url", HermesConfig.base_url)
+                        ).rstrip("/")
+                        hermes_session = str(data.get("hermes_session_id", "")).strip()
+                        hermes_config = HermesConfig(
+                            base_url=hermes_base,
+                            model=str(data.get("hermes_model", HermesConfig.model)),
+                            api_key=str(data.get("hermes_api_key", "")),
+                            session_id=hermes_session,
+                        )
+                        agent_client = HermesAgentClient(hermes_config)
+                    else:
+                        lm_config = LmStudioConfig(url=url, model=model)
+                        agent_client = LocalInferenceClient(lm_config)
+                    await agent_client.__aenter__()
+
+                    if hermes_mode and isinstance(agent_client, HermesAgentClient):
+                        assert agent_client._client is not None
+                        try:
+                            await check_gateway_health(hermes_config, agent_client._client)
+                        except InferenceError as exc:
+                            await agent_client.__aexit__(None, None, None)
+                            agent_client = None
+                            await send_json({"type": "error", "message": str(exc)})
+                            continue
 
                     trace = LatencyTrace()
                     trace.add_observer(WebSocketTraceObserver(send_json))
@@ -322,7 +353,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         )
 
                         engine = ConversationEngine(
-                            llm=llm_client,
+                            agent=agent_client,
                             playback=playback,
                             trace=trace,
                             echo_tokens=False,
@@ -330,6 +361,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             memory_config=memory_config,
                             tool_registry=create_default_registry(),
                             enabled_tools=enabled_tools,
+                            agent_mode=agent_mode,
                         )
                         await engine.start()
                         attach_auto_followup_scheduler()
@@ -362,18 +394,22 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 await send_json({"type": "error", "message": str(e)})
 
                         local_loop_task = asyncio.create_task(local_run_loop())
-                        await send_json({
+                        session_payload: dict[str, Any] = {
                             "type": "session_started",
                             "mode": "local",
                             "voice": voice,
-                        })
+                            "agent_backend": agent_backend_name,
+                        }
+                        if isinstance(agent_client, HermesAgentClient):
+                            session_payload["hermes_session_id"] = agent_client.session_id
+                        await send_json(session_payload)
                         await send_memory_facts(active_memory_store)
 
                     elif session_mode == "browser":
                         # Browser mode: WebSocket serves as microphone & speaker
                         web_playback = WebSocketPlaybackSink(send_json, send_bytes, kokoro_sink)
                         engine = ConversationEngine(
-                            llm=llm_client,
+                            agent=agent_client,
                             playback=web_playback,
                             trace=trace,
                             echo_tokens=False,
@@ -381,6 +417,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             memory_config=memory_config,
                             tool_registry=create_default_registry(),
                             enabled_tools=enabled_tools,
+                            agent_mode=agent_mode,
                         )
                         await engine.start()
                         attach_auto_followup_scheduler()
@@ -401,11 +438,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                         engine.trace.mark("capture_started")
 
-                        await send_json({
+                        browser_session_payload: dict[str, Any] = {
                             "type": "session_started",
                             "mode": "browser",
                             "voice": voice,
-                        })
+                            "agent_backend": agent_backend_name,
+                        }
+                        if isinstance(agent_client, HermesAgentClient):
+                            browser_session_payload["hermes_session_id"] = agent_client.session_id
+                        await send_json(browser_session_payload)
                         await send_json({"type": "status", "status": "listening"})
                         if auto_followup_scheduler:
                             auto_followup_scheduler.arm_listening()
@@ -459,10 +500,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         local_loop_task.cancel()
                     if engine:
                         await engine.close()
-                    if llm_client:
-                        await llm_client.__aexit__(None, None, None)
+                    if agent_client:
+                        await agent_client.__aexit__(None, None, None)
                     engine = None
-                    llm_client = None
+                    agent_client = None
                     session_mode = None
                     session_paused = False
                     await send_json({"type": "session_stopped"})

@@ -26,6 +26,15 @@ class FakeLlm:
                 await asyncio.sleep(self.delay)
             yield event
 
+    async def cancel_active(self) -> None:
+        return None
+
+    async def __aenter__(self) -> "FakeLlm":
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
 
 class RecordingPlayback:
     def __init__(self) -> None:
@@ -205,6 +214,41 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("I searched the web.", spoken)
         self.assertIn("BBC headline", spoken)
         self.assertNotIn("couldn't get", spoken)
+
+
+    async def test_hermes_mode_sends_only_user_turn_and_skips_forced_search(self) -> None:
+        llm: Any = FakeLlm([TextDeltaEvent("Hermes says hi.")])
+        playback = RecordingPlayback()
+
+        async def fake_search_web(query: str) -> str:
+            return "should not run"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_web",
+                description="Search the web.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_web,
+            )
+        )
+        engine = ConversationEngine(
+            agent=llm,
+            playback=playback,
+            tool_registry=registry,
+            enabled_tools={"search_web"},
+            agent_mode="hermes",
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("Search for the latest UK news today.")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(llm.messages[0], [{"role": "user", "content": "Search for the latest UK news today."}])
+        self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Hermes says hi."})
 
 
 if __name__ == "__main__":
