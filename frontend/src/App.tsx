@@ -9,18 +9,24 @@ import {
   Power,
   AlertCircle,
   Brain,
+  Timer,
   Pause,
   Play,
   RotateCcw,
   Download,
   Save,
   Trash2,
+  Globe,
+  Image,
+  Clapperboard,
+  Wrench,
 } from "lucide-react";
 import { LatencyScoreboard } from "./components/LatencyScoreboard";
 import { WaveformVisualizer } from "./components/WaveformVisualizer";
 import { TranscriptStream } from "./components/TranscriptStream";
 import type { Message } from "./components/TranscriptStream";
 import { useAudioStreamer } from "./hooks/useAudioStreamer";
+import { playToolEndClick, playToolStartClick } from "./audio/toolCue";
 
 type Mode = "local" | "browser";
 type Status = "idle" | "listening" | "generating" | "speaking" | "paused";
@@ -83,28 +89,21 @@ function App() {
   const [ttsSpeed, setTtsSpeed] = useState(1);
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
+  const [autoFollowupEnabled, setAutoFollowupEnabled] = useState(true);
+  const [autoFollowupSeconds, setAutoFollowupSeconds] = useState(8);
+  const [toolWebEnabled, setToolWebEnabled] = useState(false);
+  const [toolImageEnabled, setToolImageEnabled] = useState(false);
+  const [toolGifEnabled, setToolGifEnabled] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   const previewingVoiceRef = useRef<string | null>(null);
   const previewAudioContextRef = useRef<AudioContext | null>(null);
   const previewPlaybackTimeRef = useRef(0);
   const toolAudioContextRef = useRef<AudioContext | null>(null);
-  const toolCueOscillatorsRef = useRef<OscillatorNode[]>([]);
-  const toolCueGainRef = useRef<GainNode | null>(null);
+  const toolCueActiveRef = useRef(false);
 
   // Hook for audio streaming and local queue scheduling in browser mode
   const { startStreaming, stopStreaming, isStreaming, micVolume } = useAudioStreamer();
-
-  // Close websocket on unmount
-  useEffect(() => {
-    return () => {
-      stopToolCue();
-      stopVoicePreview();
-      if (socketRef.current) {
-        socketRef.current.close();
-      }
-    };
-  }, []);
 
   const getToolAudioContext = () => {
     if (!toolAudioContextRef.current) {
@@ -114,60 +113,17 @@ function App() {
   };
 
   const startToolCue = async () => {
-    if (toolCueOscillatorsRef.current.length > 0) return;
-
-    const audioContext = getToolAudioContext();
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
-    }
-
-    const gain = audioContext.createGain();
-    const lowTone = audioContext.createOscillator();
-    const highTone = audioContext.createOscillator();
-
-    lowTone.type = "sine";
-    highTone.type = "sine";
-    lowTone.frequency.value = 196;
-    highTone.frequency.value = 246.94;
-
-    // A quiet tonal cue reads as "working" without the harsh static of white noise.
-    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.018, audioContext.currentTime + 0.08);
-
-    lowTone.connect(gain);
-    highTone.connect(gain);
-    gain.connect(audioContext.destination);
-    lowTone.start();
-    highTone.start();
-
-    toolCueOscillatorsRef.current = [lowTone, highTone];
-    toolCueGainRef.current = gain;
+    toolCueActiveRef.current = true;
+    await playToolStartClick(getToolAudioContext());
   };
 
-  const stopToolCue = () => {
-    const oscillators = toolCueOscillatorsRef.current;
-    const gain = toolCueGainRef.current;
-    if (oscillators.length === 0) return;
-
+  const stopToolCue = async (playEnd = true) => {
+    if (!toolCueActiveRef.current) return;
+    toolCueActiveRef.current = false;
     const audioContext = toolAudioContextRef.current;
-    if (gain && audioContext) {
-      gain.gain.setTargetAtTime(0.0001, audioContext.currentTime, 0.04);
+    if (playEnd && audioContext) {
+      await playToolEndClick(audioContext);
     }
-
-    window.setTimeout(() => {
-      oscillators.forEach((oscillator) => {
-        try {
-          oscillator.stop();
-        } catch {
-          // Source may already have stopped after a websocket close or interrupt.
-        }
-        oscillator.disconnect();
-      });
-      gain?.disconnect();
-    }, 120);
-
-    toolCueOscillatorsRef.current = [];
-    toolCueGainRef.current = null;
   };
 
   const playPreviewAudio = async (blob: Blob) => {
@@ -201,6 +157,17 @@ function App() {
     previewPlaybackTimeRef.current = 0;
   };
 
+  // Close websocket on unmount
+  useEffect(() => {
+    return () => {
+      toolCueActiveRef.current = false;
+      previewingVoiceRef.current = null;
+      if (socketRef.current) {
+        socketRef.current.close();
+      }
+    };
+  }, []);
+
   const handleConnect = () => {
     if (isConnected) {
       if (socketRef.current) socketRef.current.close();
@@ -222,7 +189,7 @@ function App() {
       setIsSessionActive(false);
       setStatus("idle");
       setIsPaused(false);
-      stopToolCue();
+      void stopToolCue(false);
       stopVoicePreview();
       stopStreaming();
     };
@@ -257,7 +224,7 @@ function App() {
             setIsSessionActive(false);
             setStatus("idle");
             setIsPaused(false);
-            stopToolCue();
+            void stopToolCue(false);
             stopVoicePreview();
             stopStreaming();
             break;
@@ -380,12 +347,12 @@ function App() {
 
           case "playback_stop":
             // Trigger browser-side player queue clearance (handled automatically inside useAudioStreamer)
-            stopToolCue();
+            void stopToolCue(false);
             break;
 
           case "telemetry":
             if (data.event === "tool_call_forced" || data.event === "tool_call_started") {
-              startToolCue();
+              void startToolCue();
             }
             if (
               data.event === "tool_call_finished" ||
@@ -393,7 +360,7 @@ function App() {
               data.event === "generation_finished" ||
               data.event === "generation_cancelled"
             ) {
-              stopToolCue();
+              void stopToolCue();
             }
             break;
 
@@ -401,8 +368,11 @@ function App() {
             setMetrics(data.metrics);
             break;
 
+          case "auto_followup":
+            break;
+
           case "error":
-            stopToolCue();
+            void stopToolCue(false);
             setError(data.message);
             break;
         }
@@ -427,6 +397,11 @@ function App() {
         voice,
         tts_speed: ttsSpeed,
         memory: memoryEnabled,
+        auto_followup: autoFollowupEnabled,
+        auto_followup_seconds: autoFollowupSeconds,
+        tool_web: toolWebEnabled,
+        tool_image: toolImageEnabled,
+        tool_gif: toolGifEnabled,
       })
     );
   };
@@ -650,6 +625,56 @@ function App() {
                 </div>
               )}
 
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autoFollowupEnabled}
+                disabled={isSessionActive}
+                onClick={() => setAutoFollowupEnabled((enabled) => !enabled)}
+                className="touch-button voyce-panel-subtle w-full rounded-2xl px-4 py-3 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
+              >
+                <span className="flex items-center justify-between gap-4">
+                  <span>
+                    <span className="flex items-center gap-1.5 font-bold text-zinc-300 font-mono uppercase">
+                      <Timer className="w-3.5 h-3.5 text-purple-400" />
+                      Auto Follow-up
+                    </span>
+                    <span className="block mt-1 leading-normal">
+                      After silence, Vokel re-engages so the conversation does not stall.
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 flex-col items-end gap-1">
+                    <span className="text-[10px] font-mono uppercase text-zinc-500">
+                      {autoFollowupEnabled ? "On" : "Off"}
+                    </span>
+                    <span className="recall-switch" data-enabled={autoFollowupEnabled}>
+                      <span className="recall-knob" />
+                    </span>
+                  </span>
+                </span>
+              </button>
+
+              <div>
+                <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                  Follow-up Timer
+                </label>
+                <select
+                  disabled={isSessionActive || !autoFollowupEnabled}
+                  value={autoFollowupSeconds}
+                  onChange={(e) => setAutoFollowupSeconds(Number(e.target.value))}
+                  className="vokel-field"
+                >
+                  <option value={5}>5 seconds</option>
+                  <option value={8}>8 seconds</option>
+                  <option value={12}>12 seconds</option>
+                  <option value={15}>15 seconds</option>
+                  <option value={20}>20 seconds</option>
+                </select>
+                <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+                  Default is 8s. Applies on the next session start.
+                </p>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 {!isSessionActive ? (
                   <button
@@ -693,6 +718,54 @@ function App() {
                   </>
                 )}
               </div>
+            </div>
+          </div>
+
+          {/* Online Tools */}
+          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
+            <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
+              <Wrench className="w-4 h-4 text-purple-400" />
+              <span>Online Tools</span>
+            </h2>
+
+            <p className="text-[11px] leading-relaxed text-zinc-500 mb-4">
+              Enable tools the model can use during conversation. All off by default to keep responses fast and local.
+            </p>
+
+            <div className="space-y-2">
+              {([
+                { key: "web" as const, label: "Web Search", icon: Globe, state: toolWebEnabled, setter: setToolWebEnabled, desc: "Search the web for current information" },
+                { key: "image" as const, label: "Image Search", icon: Image, state: toolImageEnabled, setter: setToolImageEnabled, desc: "Find images from Unsplash" },
+                { key: "gif" as const, label: "GIF Search", icon: Clapperboard, state: toolGifEnabled, setter: setToolGifEnabled, desc: "Find animated GIFs from Giphy" },
+              ] as const).map(({ label, icon: Icon, state, setter, desc }) => (
+                <button
+                  key={label}
+                  type="button"
+                  role="switch"
+                  aria-checked={state}
+                  disabled={isSessionActive}
+                  onClick={() => setter((v) => !v)}
+                  className="touch-button voyce-panel-subtle w-full rounded-2xl px-4 py-2.5 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
+                >
+                  <span className="flex items-center justify-between gap-4">
+                    <span>
+                      <span className="flex items-center gap-1.5 font-bold text-zinc-300 font-mono uppercase">
+                        <Icon className="w-3.5 h-3.5 text-purple-400" />
+                        {label}
+                      </span>
+                      <span className="block mt-0.5 leading-normal text-[11px]">{desc}</span>
+                    </span>
+                    <span className="flex shrink-0 flex-col items-end gap-1">
+                      <span className="text-[10px] font-mono uppercase text-zinc-500">
+                        {state ? "On" : "Off"}
+                      </span>
+                      <span className="recall-switch" data-enabled={state}>
+                        <span className="recall-knob" />
+                      </span>
+                    </span>
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
 

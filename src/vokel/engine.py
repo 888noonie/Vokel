@@ -12,6 +12,7 @@ from .playback import PlaybackSink
 from .telemetry import LatencyTrace
 from .text_chunker import PhraseChunker
 from .tools import ToolRegistry
+from .auto_followup import AUTO_FOLLOWUP_NUDGE
 from .turns import AsrEngine, TurnProducer
 
 
@@ -26,6 +27,7 @@ class ConversationEngine:
         memory_store: MemoryStore | None = None,
         memory_config: MemoryConfig | None = None,
         tool_registry: ToolRegistry | None = None,
+        enabled_tools: set[str] | None = None,
     ):
         self.llm = llm
         self.playback = playback
@@ -35,10 +37,12 @@ class ConversationEngine:
         self.memory_config = memory_config or MemoryConfig()
         self.memory_store = memory_store or NullMemoryStore()
         self.tool_registry = tool_registry
+        self.enabled_tools: set[str] = enabled_tools if enabled_tools is not None else set()
         self.history: list[ChatMessage] = [{"role": "system", "content": self.config.system_prompt}]
         self._playback_queue: asyncio.Queue[str] = asyncio.Queue()
         self._current_generation: asyncio.Task[None] | None = None
         self._playback_worker: asyncio.Task[None] | None = None
+        self._suppress_memory_write = False
 
     async def start(self) -> None:
         if self._playback_worker is None or self._playback_worker.done():
@@ -71,6 +75,23 @@ class ConversationEngine:
         self._trim_history()
         self._current_generation = asyncio.create_task(self._generate_reply(user_text, memory_context))
         await self._current_generation
+
+    async def submit_auto_followup(self) -> None:
+        """Prompt the model to re-engage after listening idle (no visible user transcript)."""
+        if not self._should_auto_followup():
+            return
+        await self.interrupt()
+        self.trace.mark("auto_followup_triggered")
+        nudge = AUTO_FOLLOWUP_NUDGE
+        memory_context = await self._retrieve_memory_context(nudge)
+        self.history.append({"role": "user", "content": nudge})
+        self._trim_history()
+        self._suppress_memory_write = True
+        try:
+            self._current_generation = asyncio.create_task(self._generate_reply(nudge, memory_context))
+            await self._current_generation
+        finally:
+            self._suppress_memory_write = False
 
     async def run_turns(
         self,
@@ -294,6 +315,8 @@ class ConversationEngine:
         return False
 
     async def _maybe_run_required_gif_search(self, user_text: str) -> str:
+        if "search_gif" not in self.enabled_tools:
+            return ""
         if not self.tool_registry or not self.tool_registry.get_tool("search_gif"):
             return ""
 
@@ -383,7 +406,18 @@ class ConversationEngine:
         self.trace.mark("tool_call_finished", tool_name="search_gif", chars=len(result))
         return result
 
+    def _recent_history_mentions_image(self) -> bool:
+        """Check if the last few conversation turns were about images/pictures."""
+        image_words = ("image", "picture", "photo", "unsplash", "photograph")
+        for msg in self.history[-4:]:
+            content = str(msg.get("content") or "").lower()
+            if any(w in content for w in image_words):
+                return True
+        return False
+
     async def _maybe_run_required_image_search(self, user_text: str) -> str:
+        if "search_image" not in self.enabled_tools:
+            return ""
         if not self.tool_registry or not self.tool_registry.get_tool("search_image"):
             return ""
 
@@ -392,27 +426,65 @@ class ConversationEngine:
             "show me an image",
             "show me a picture",
             "show me a photo",
+            "find an image",
+            "find a picture",
+            "find a photo",
+            "find me an image",
+            "find me a picture",
+            "find me a photo",
+            "get an image",
+            "get a picture",
+            "get a photo",
             "image of",
             "picture of",
             "photo of",
-            "show me what",
-            "what does",
-            "show me how",
         )
-        if not any(t in normalized for t in triggers):
+        explicit_match = any(t in normalized for t in triggers)
+
+        # Context-aware: if recent conversation was about images, treat short
+        # follow-ups as image requests
+        context_match = (
+            not explicit_match
+            and self._recent_history_mentions_image()
+            and len(user_text.split()) <= 8
+        )
+
+        if not explicit_match and not context_match:
             return ""
 
         # Extract a clean query from the user request
-        query = user_text
+        query = ""
         for prefix in ("show me an image of", "show me a picture of", "show me a photo of",
-                        "show me an image", "show me a picture", "show me a photo"):
+                        "find me an image of", "find me a picture of", "find me a photo of",
+                        "find an image of", "find a picture of", "find a photo of",
+                        "get an image of", "get a picture of", "get a photo of",
+                        "show me an image", "show me a picture", "show me a photo",
+                        "find me an image", "find me a picture", "find an image",
+                        "image of", "picture of", "photo of"):
             idx = normalized.find(prefix)
             if idx != -1:
-                query = user_text[idx + len(prefix):].strip().rstrip(".!?")
+                query = user_text[idx + len(prefix):].strip().rstrip(".!?,")
                 break
 
+        # For context follow-ups, use the whole user text as the query
+        if not query and context_match:
+            query = user_text.strip().rstrip(".!?,")
+
+        # Fallback: extract content words if query is still empty or too long
+        if not query or len(query) > 80:
+            filler = {"show", "me", "a", "the", "an", "of", "for", "about", "that",
+                      "is", "to", "want", "see", "find", "get", "any", "try", "just",
+                      "please", "can", "you", "i", "use", "internet", "image", "picture",
+                      "photo", "it", "some", "test", "do", "look", "like", "what"}
+            words = [w for w in normalized.split() if w.strip(".,!?'\"") not in filler]
+            query = " ".join(words[:5]) if words else user_text.strip()[:40]
+
         if not query:
-            query = user_text
+            query = "cute animal"
+
+        # Hard cap
+        if len(query) > 60:
+            query = query[:60].rsplit(" ", 1)[0]
 
         self.trace.mark("tool_call_forced", tool_name="search_image")
         tool_call = ToolCallEvent(
@@ -443,6 +515,8 @@ class ConversationEngine:
         return result
 
     async def _maybe_run_required_web_search(self, user_text: str) -> str:
+        if "search_web" not in self.enabled_tools:
+            return ""
         if not self.tool_registry or not self.tool_registry.get_tool("search_web"):
             return ""
 
@@ -632,6 +706,12 @@ class ConversationEngine:
         recent = self.history[-(max_messages - 1) :]
         self.history = system + recent
 
+    def _should_auto_followup(self) -> bool:
+        non_system = [message for message in self.history if message["role"] != "system"]
+        if not non_system:
+            return True
+        return non_system[-1]["role"] == "assistant"
+
     async def _retrieve_memory_context(self, user_text: str) -> str:
         if not self.memory_config.enabled:
             return ""
@@ -650,7 +730,7 @@ class ConversationEngine:
             return ""
 
     async def _record_memory_turn(self, user_text: str, assistant_text: str) -> None:
-        if not self.memory_config.enabled:
+        if self._suppress_memory_write or not self.memory_config.enabled:
             return
         self.trace.mark("memory_write_started", chars=len(user_text) + len(assistant_text))
         try:

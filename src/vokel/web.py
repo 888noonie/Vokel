@@ -20,6 +20,11 @@ from .audio import (
     SileroVadTurnProducer,
     create_streaming_asr,
 )
+from .auto_followup import (
+    AutoFollowupScheduler,
+    clamp_auto_followup_seconds,
+    DEFAULT_AUTO_FOLLOWUP_SECONDS,
+)
 from .config import LmStudioConfig
 from .engine import ConversationEngine
 from .web_search import create_default_registry
@@ -143,8 +148,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     logger.info("WebSocket connection established")
 
-    # Serialize browser-mode submit/playback so endpoint bursts cannot double-fire the LLM.
-    browser_turn_lock = asyncio.Lock()
+    # Serialize turns and auto follow-up so they cannot double-fire the LLM.
+    turn_lock = asyncio.Lock()
 
     # Keep track of active tasks and engines to clean them up on disconnect
     session_mode: str | None = None
@@ -153,6 +158,50 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     local_loop_task: asyncio.Task[None] | None = None
     session_paused = False
     active_memory_store: SQLiteMemoryStore | None = None
+    auto_followup_scheduler: AutoFollowupScheduler | None = None
+    auto_followup_enabled = True
+    auto_followup_seconds = DEFAULT_AUTO_FOLLOWUP_SECONDS
+
+    async def run_auto_followup() -> None:
+        if engine is None or session_paused:
+            return
+        if engine._current_generation and not engine._current_generation.done():
+            return
+        if not engine._playback_queue.empty():
+            return
+        async with turn_lock:
+            try:
+                await send_json({"type": "auto_followup", "status": "triggered"})
+                await send_json({"type": "status", "status": "generating"})
+                if auto_followup_scheduler:
+                    auto_followup_scheduler.on_user_activity()
+                await engine.submit_auto_followup()
+                await engine.wait_for_playback()
+                await send_json({
+                    "type": "summary",
+                    "metrics": engine.trace.summary_ms(),
+                })
+            except Exception as exc:
+                logger.error(f"Auto follow-up failed: {exc}")
+                await send_json({"type": "error", "message": str(exc)})
+            finally:
+                if session_paused or engine is None:
+                    return
+                await send_json({"type": "status", "status": "listening"})
+                if auto_followup_scheduler and not session_paused:
+                    auto_followup_scheduler.arm_listening()
+
+    def attach_auto_followup_scheduler() -> None:
+        nonlocal auto_followup_scheduler
+        auto_followup_scheduler = AutoFollowupScheduler(
+            enabled=auto_followup_enabled,
+            delay_s=auto_followup_seconds,
+            on_trigger=run_auto_followup,
+        )
+
+    def cancel_auto_followup() -> None:
+        if auto_followup_scheduler:
+            auto_followup_scheduler.cancel()
 
     def memory_entry_payload(entry: Any) -> dict[str, Any]:
         return {
@@ -198,6 +247,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         await llm_client.__aexit__(None, None, None)
 
                     session_paused = False
+                    auto_followup_enabled = bool(data.get("auto_followup", True))
+                    auto_followup_seconds = clamp_auto_followup_seconds(
+                        float(data.get("auto_followup_seconds", DEFAULT_AUTO_FOLLOWUP_SECONDS))
+                    )
                     session_mode = data.get("mode", "local")
                     url = data.get("url", LmStudioConfig.url)
                     model = data.get("model", LmStudioConfig.model)
@@ -216,6 +269,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         scan_limit=memory_config.scan_limit,
                     )
                     memory_store = active_memory_store if memory_config.enabled else None
+
+                    enabled_tools: set[str] = set()
+                    if data.get("tool_image"):
+                        enabled_tools.add("search_image")
+                    if data.get("tool_gif"):
+                        enabled_tools.add("search_gif")
+                    if data.get("tool_web"):
+                        enabled_tools.add("search_web")
 
                     lm_config = LmStudioConfig(url=url, model=model)
                     llm_client = LocalInferenceClient(lm_config)
@@ -268,8 +329,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             memory_store=memory_store,
                             memory_config=memory_config,
                             tool_registry=create_default_registry(),
+                            enabled_tools=enabled_tools,
                         )
                         await engine.start()
+                        attach_auto_followup_scheduler()
 
                         local_engine = engine
 
@@ -281,7 +344,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                         await asyncio.sleep(0.1)
                                         continue
                                     await send_json({"type": "status", "status": "listening"})
+                                    if auto_followup_scheduler:
+                                        auto_followup_scheduler.arm_listening()
                                     await local_engine.run_turns(producer, asr, max_turns=1)
+                                    if auto_followup_scheduler:
+                                        auto_followup_scheduler.on_user_activity()
                                     # Push latest summary metrics
                                     await send_json({
                                         "type": "summary",
@@ -313,8 +380,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             memory_store=memory_store,
                             memory_config=memory_config,
                             tool_registry=create_default_registry(),
+                            enabled_tools=enabled_tools,
                         )
                         await engine.start()
+                        attach_auto_followup_scheduler()
 
                         # Create the online ASR engine for browser stream
                         streaming_asr_dir = data.get(
@@ -338,6 +407,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             "voice": voice,
                         })
                         await send_json({"type": "status", "status": "listening"})
+                        if auto_followup_scheduler:
+                            auto_followup_scheduler.arm_listening()
                         await send_memory_facts(active_memory_store)
 
                     else:
@@ -383,6 +454,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         })
 
                 elif msg_type == "stop_session":
+                    cancel_auto_followup()
                     if local_loop_task and not local_loop_task.done():
                         local_loop_task.cancel()
                     if engine:
@@ -397,12 +469,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                 elif msg_type == "interrupt":
                     if engine:
+                        cancel_auto_followup()
                         await engine.interrupt()
                         await send_json({"type": "status", "status": "listening"})
+                        if auto_followup_scheduler:
+                            auto_followup_scheduler.arm_listening()
 
                 elif msg_type == "pause_session":
                     if engine:
                         session_paused = True
+                        cancel_auto_followup()
                         await engine.interrupt()
                         if session_mode == "local" and local_loop_task and not local_loop_task.done():
                             local_loop_task.cancel()
@@ -421,9 +497,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             if local_loop_task is None or local_loop_task.done():
                                 local_loop_task = asyncio.create_task(local_run_loop())
                         await send_json({"type": "status", "status": "listening"})
+                        if auto_followup_scheduler:
+                            auto_followup_scheduler.arm_listening()
 
                 elif msg_type == "reset_session":
                     if engine:
+                        cancel_auto_followup()
                         await engine.reset_conversation()
                         if session_mode == "browser":
                             browser_asr_stream = browser_asr.create_stream()
@@ -488,6 +567,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                 current_time = asyncio.get_running_loop().time()
 
+                if frame_rms >= speech_threshold and auto_followup_scheduler:
+                    auto_followup_scheduler.on_user_activity()
+
                 if text != browser_last_text:
                     # Barge-in only on real microphone energy (avoids hallucinated partials stopping playback).
                     if is_active and frame_rms >= speech_threshold:
@@ -524,7 +606,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     utterance = browser_last_text.strip()
                     # Ignore empty or noise-only endpoints so we do not spam the LLM.
                     if len(utterance) >= 2:
-                        async with browser_turn_lock:
+                        async with turn_lock:
+                            if auto_followup_scheduler:
+                                auto_followup_scheduler.on_user_activity()
                             engine.trace.mark(
                                 "capture_finished",
                                 has_audio=True,
@@ -553,6 +637,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     browser_stable_fired = False
                     await send_json({"type": "status", "status": "listening"})
                     engine.trace.mark("capture_started")
+                    if auto_followup_scheduler:
+                        auto_followup_scheduler.arm_listening()
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
@@ -564,6 +650,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             pass
     finally:
         # Guarantee session resources are cleaned up
+        cancel_auto_followup()
         if local_loop_task and not local_loop_task.done():
             local_loop_task.cancel()
         if engine:

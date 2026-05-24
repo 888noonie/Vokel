@@ -84,9 +84,10 @@ The browser transcript keeps the original text with clickable links intact.
 
 ## Audio Cues
 
-The web UI plays a quiet two-tone sine cue (not white noise) while an external
-tool call is running. The cue starts on `tool_call_forced` or `tool_call_started`
-telemetry and fades smoothly when the tool or generation finishes.
+The web UI plays a short two-tone click when an external tool starts (ascending
+pair) and a softer descending pair when the tool or generation finishes. Cues
+fire on `tool_call_forced` / `tool_call_started` and clear on
+`tool_call_finished` / `tool_call_failed` / `generation_finished`.
 
 ## Voice Preview
 

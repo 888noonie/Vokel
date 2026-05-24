@@ -150,7 +150,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         )
         llm: Any = FakeLlm([TextDeltaEvent("Based on the search results, story one is the lead.")])
         playback = RecordingPlayback()
-        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry)
+        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry, enabled_tools={"search_web"})
 
         await engine.start()
         try:
@@ -192,7 +192,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         )
         llm: Any = FakeLlm([TextDeltaEvent("I couldn't get the result right now.")])
         playback = RecordingPlayback()
-        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry)
+        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry, enabled_tools={"search_web"})
 
         await engine.start()
         try:
