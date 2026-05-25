@@ -174,7 +174,7 @@ Exit check:
 
 ## Phase 5: Android Companion And Termux Hermes
 
-Status: planned next.
+Status: complete first slice.
 
 Goal: bring the proven voice/control surface to Android, with a first target of
 talking to a Hermes agent running in Termux on the same phone.

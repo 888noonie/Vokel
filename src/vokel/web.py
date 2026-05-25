@@ -704,6 +704,27 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                     await send_execute_state("no executable action pending")
 
+                elif msg_type == "probe_hermes":
+                    probe_url = str(data.get("hermes_url", HermesConfig.base_url)).rstrip("/")
+                    probe_key = str(data.get("hermes_api_key", ""))
+                    probe_config = HermesConfig(base_url=probe_url, api_key=probe_key)
+                    import httpx
+                    try:
+                        async with httpx.AsyncClient(timeout=5.0) as probe_client:
+                            await check_gateway_health(probe_config, probe_client)
+                        await send_agent_event(
+                            "gateway_health_ok",
+                            backend="hermes",
+                            detail=f"Hermes gateway reachable at {probe_url}",
+                        )
+                    except InferenceError as exc:
+                        await send_agent_event(
+                            "gateway_health_failed",
+                            backend="hermes",
+                            level="error",
+                            detail=str(exc),
+                        )
+
             # Handle binary audio packets in browser streaming mode
             elif "bytes" in message and session_mode == "browser" and engine:
                 if session_paused:

@@ -77,6 +77,7 @@ const kokoroVoices = [
 
 const voicePrefsKey = "vokel.voicePrefs.v1";
 const previousChatsKey = "vokel.previousChats.v1";
+const hermesPrefsKey = "vokel.hermesPrefs.v1";
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -133,11 +134,17 @@ function App() {
   const [toolImageEnabled, setToolImageEnabled] = useState(false);
   const [toolGifEnabled, setToolGifEnabled] = useState(false);
   const [agentBackend, setAgentBackend] = useState<AgentBackend>("builtin");
-  const [hermesUrl, setHermesUrl] = useState("http://127.0.0.1:8642");
-  const [hermesApiKey, setHermesApiKey] = useState("");
+  const savedHermesPrefs = loadJson(hermesPrefsKey, {
+    url: "http://127.0.0.1:8642",
+    apiKey: "",
+    model: "hermes-agent",
+  });
+  const [hermesUrl, setHermesUrl] = useState(savedHermesPrefs.url);
+  const [hermesApiKey, setHermesApiKey] = useState(savedHermesPrefs.apiKey);
   const [hermesSessionId, setHermesSessionId] = useState("");
-  const [hermesModel, setHermesModel] = useState("hermes-agent");
+  const [hermesModel, setHermesModel] = useState(savedHermesPrefs.model);
   const [activeHermesSessionId, setActiveHermesSessionId] = useState<string | null>(null);
+  const [probeStatus, setProbeStatus] = useState<"idle" | "probing" | "ok" | "error">("idle");
 
   const socketRef = useRef<WebSocket | null>(null);
   const previewingVoiceRef = useRef<string | null>(null);
@@ -167,6 +174,13 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(previousChatsKey, JSON.stringify(previousChats));
   }, [previousChats]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      hermesPrefsKey,
+      JSON.stringify({ url: hermesUrl, apiKey: hermesApiKey, model: hermesModel })
+    );
+  }, [hermesUrl, hermesApiKey, hermesModel]);
 
   const getToolAudioContext = () => {
     if (!toolAudioContextRef.current) {
@@ -280,6 +294,9 @@ function App() {
 
         switch (data.type) {
           case "agent_event": {
+            if (data.event === "gateway_health_ok") setProbeStatus("ok");
+            if (data.event === "gateway_health_failed") setProbeStatus("error");
+            
             const now = new Date();
             const event: AgentEvent = {
               id: `${now.getTime()}-${Math.random()}`,
@@ -641,6 +658,18 @@ function App() {
     });
   };
 
+  const handleProbeHermes = () => {
+    if (!socketRef.current || !isConnected) return;
+    setProbeStatus("probing");
+    socketRef.current.send(
+      JSON.stringify({
+        type: "probe_hermes",
+        hermes_url: hermesUrl,
+        hermes_api_key: hermesApiKey,
+      })
+    );
+  };
+
   const handleExportMarkdown = () => {
     const selectedFacts = memoryFacts.filter((fact) => selectedMemoryIds.has(fact.id));
     const lines = [
@@ -728,6 +757,34 @@ function App() {
           </div>
         </div>
       </header>
+
+      {/* Mobile Privacy & Backend Banner */}
+      <div className="bg-zinc-900 border-b border-zinc-800 xl:hidden">
+        <div className="safe-container py-2 flex items-center justify-between text-[10px] font-mono tracking-wider text-zinc-400">
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1">
+              <Cpu className="w-3 h-3 text-purple-400" />
+              {agentBackend === "hermes" ? "HERMES" : "BUILT-IN"}
+            </span>
+            <span className="flex items-center gap-1">
+              <Wrench className="w-3 h-3 text-indigo-400" />
+              {agentBackend === "hermes" ? "REMOTE" : (toolWebEnabled || toolImageEnabled || toolGifEnabled ? "ENABLED" : "OFF")}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1">
+              {outputMuted ? <VolumeX className="w-3 h-3 text-amber-400" /> : <Volume2 className="w-3 h-3 text-emerald-400" />}
+              {outputMuted ? "MUTED" : "ON"}
+            </span>
+            {executeState.armed && (
+              <span className="flex items-center gap-1 text-rose-400 font-bold">
+                <Flame className="w-3 h-3 animate-pulse" />
+                ARMED
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Main Content */}
       <main className="safe-container flex-1 py-6 sm:py-8 grid grid-cols-1 xl:grid-cols-[minmax(280px,360px)_1fr] gap-5 lg:gap-7">
@@ -977,6 +1034,22 @@ function App() {
                     className="vokel-field"
                   />
                 </div>
+                
+                <div className="pt-2">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={isSessionActive || !isConnected || probeStatus === "probing"}
+                      onClick={handleProbeHermes}
+                      className="touch-button rounded-xl border border-zinc-850 bg-zinc-950 px-4 py-2 text-xs font-bold tracking-wide text-zinc-300 transition-all hover:bg-zinc-900 disabled:opacity-40"
+                    >
+                      {probeStatus === "probing" ? "TESTING..." : "TEST CONNECTION"}
+                    </button>
+                    {probeStatus === "ok" && <span className="text-xs font-bold text-emerald-400 font-mono">OK</span>}
+                    {probeStatus === "error" && <span className="text-xs font-bold text-rose-400 font-mono">FAILED</span>}
+                  </div>
+                </div>
+
                 {activeHermesSessionId && (
                   <p className="text-[11px] font-mono text-purple-300/90">
                     Active conversation: {activeHermesSessionId}
