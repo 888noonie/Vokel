@@ -4,7 +4,10 @@ __pycache__/
 *.egg-info/
 *.pyc
 build-log.md
+GEMINI_HANDOVER.md
 models/
 data/
 Chat Sessions/
 frontend/dist/
+vokelandroiduiprototype/
+photos/

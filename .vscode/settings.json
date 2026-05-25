@@ -1,0 +1,14 @@
+{
+  "remote.portsAttributes": {
+    "5173": {
+      "onAutoForward": "notify",
+      "requireLocalPort": true,
+      "elevateIfNeeded": true
+    },
+    "8000": {
+      "onAutoForward": "notify",
+      "requireLocalPort": true,
+      "elevateIfNeeded": true
+    }
+  }
+}
