@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import suppress
+from typing import Literal
 
+from .agent_backend import AgentBackend
 from .config import VoiceLoopConfig
 from .events import TextDeltaEvent, ToolCallEvent
-from .inference import ChatMessage, LocalInferenceClient
+from .hermes_client import HermesAgentClient
+from .inference import ChatMessage
 from .memory import MemoryConfig, MemoryStore, NullMemoryStore, build_memory_context
 from .playback import PlaybackSink
 from .telemetry import LatencyTrace
@@ -16,11 +19,16 @@ from .auto_followup import AUTO_FOLLOWUP_NUDGE
 from .turns import AsrEngine, TurnProducer
 
 
+AgentMode = Literal["builtin", "hermes"]
+
+
 class ConversationEngine:
     def __init__(
         self,
-        llm: LocalInferenceClient,
-        playback: PlaybackSink,
+        agent: AgentBackend | None = None,
+        playback: PlaybackSink | None = None,
+        *,
+        llm: AgentBackend | None = None,
         config: VoiceLoopConfig | None = None,
         trace: LatencyTrace | None = None,
         echo_tokens: bool = True,
@@ -28,16 +36,24 @@ class ConversationEngine:
         memory_config: MemoryConfig | None = None,
         tool_registry: ToolRegistry | None = None,
         enabled_tools: set[str] | None = None,
+        agent_mode: AgentMode = "builtin",
     ):
-        self.llm = llm
+        resolved_agent = agent if agent is not None else llm
+        if resolved_agent is None or playback is None:
+            raise TypeError("ConversationEngine requires agent (or llm) and playback")
+        self.agent = resolved_agent
+        self.llm = resolved_agent  # Backward-compatible alias for callers using .llm
         self.playback = playback
+        self.agent_mode = agent_mode
         self.config = config or VoiceLoopConfig()
         self.trace = trace or LatencyTrace()
         self.echo_tokens = echo_tokens
         self.memory_config = memory_config or MemoryConfig()
         self.memory_store = memory_store or NullMemoryStore()
-        self.tool_registry = tool_registry
-        self.enabled_tools: set[str] = enabled_tools if enabled_tools is not None else set()
+        self.tool_registry = tool_registry if agent_mode == "builtin" else None
+        self.enabled_tools: set[str] = (
+            enabled_tools if enabled_tools is not None and agent_mode == "builtin" else set()
+        )
         self.history: list[ChatMessage] = [{"role": "system", "content": self.config.system_prompt}]
         self._playback_queue: asyncio.Queue[str] = asyncio.Queue()
         self._current_generation: asyncio.Task[None] | None = None
@@ -62,6 +78,9 @@ class ConversationEngine:
     async def reset_conversation(self) -> None:
         await self.interrupt()
         self.history = [{"role": "system", "content": self.config.system_prompt}]
+        if isinstance(self.agent, HermesAgentClient):
+            new_session = self.agent.reset_session()
+            self.trace.mark("hermes_session_reset", session_id=new_session)
         self.trace.reset()
         self.trace.mark("conversation_reset")
 
@@ -70,7 +89,9 @@ class ConversationEngine:
         if reset_trace:
             self.trace.reset()
         self.trace.mark("turn_submitted", chars=len(user_text))
-        memory_context = await self._retrieve_memory_context(user_text)
+        memory_context = (
+            "" if self.agent_mode == "hermes" else await self._retrieve_memory_context(user_text)
+        )
         self.history.append({"role": "user", "content": user_text})
         self._trim_history()
         self._current_generation = asyncio.create_task(self._generate_reply(user_text, memory_context))
@@ -78,6 +99,8 @@ class ConversationEngine:
 
     async def submit_auto_followup(self) -> None:
         """Prompt the model to re-engage after listening idle (no visible user transcript)."""
+        if self.agent_mode == "hermes":
+            return
         if not self._should_auto_followup():
             return
         await self.interrupt()
@@ -128,6 +151,9 @@ class ConversationEngine:
                 turns_processed += 1
 
     async def interrupt(self) -> None:
+        cancel = getattr(self.agent, "cancel_active", None)
+        if cancel is not None:
+            await cancel()
         if self._current_generation and not self._current_generation.done():
             self.trace.mark("interruption_requested")
             self._current_generation.cancel()
@@ -147,13 +173,16 @@ class ConversationEngine:
         self.trace.mark("generation_started")
 
         try:
-            media_result = (
-                await self._maybe_run_required_gif_search(user_text)
-                or await self._maybe_run_required_image_search(user_text)
-            )
+            media_result = ""
+            search_evidence = ""
+            if self.agent_mode == "builtin":
+                media_result = (
+                    await self._maybe_run_required_gif_search(user_text)
+                    or await self._maybe_run_required_image_search(user_text)
+                )
             if media_result:
                 spoken_parts: list[str] = []
-                async for event in self.llm.stream_chat(
+                async for event in self.agent.stream_chat(
                     self._messages_for_media_synthesis(memory_context, user_text, media_result)
                 ):
                     if isinstance(event, TextDeltaEvent):
@@ -187,9 +216,10 @@ class ConversationEngine:
                 await self._record_memory_turn(user_text, full_reply)
                 return
 
-            search_evidence = await self._maybe_run_required_web_search(user_text)
+            if self.agent_mode == "builtin":
+                search_evidence = await self._maybe_run_required_web_search(user_text)
             if search_evidence:
-                async for event in self.llm.stream_chat(
+                async for event in self.agent.stream_chat(
                     self._messages_for_web_synthesis(memory_context, user_text, search_evidence)
                 ):
                     if isinstance(event, TextDeltaEvent):
@@ -228,10 +258,14 @@ class ConversationEngine:
 
             while True:
                 tool_calls_made = []
-                messages = self._messages_for_generation(memory_context)
-                tools = self.tool_registry.get_all_schemas() if self.tool_registry else None
-                
-                async for event in self.llm.stream_chat(messages, tools):
+                messages = self._messages_for_generation(memory_context, user_text)
+                tools = (
+                    self.tool_registry.get_all_schemas()
+                    if self.agent_mode == "builtin" and self.tool_registry
+                    else None
+                )
+
+                async for event in self.agent.stream_chat(messages, tools):
                     if isinstance(event, TextDeltaEvent):
                         token = event.content
                         if not saw_token:
@@ -577,7 +611,7 @@ class ConversationEngine:
         user_text: str,
         search_evidence: str,
     ) -> list[ChatMessage]:
-        messages = self._messages_for_generation(memory_context)
+        messages = self._messages_for_generation(memory_context, user_text)
         messages.append(
             {
                 "role": "system",
@@ -615,7 +649,7 @@ class ConversationEngine:
         media_result: str,
     ) -> list[ChatMessage]:
         is_gif = "gif:" in media_result or "GIPHY" in media_result
-        messages = self._messages_for_generation(memory_context)
+        messages = self._messages_for_generation(memory_context, user_text)
         if is_gif:
             messages.append({
                 "role": "system",
@@ -730,7 +764,11 @@ class ConversationEngine:
             return ""
 
     async def _record_memory_turn(self, user_text: str, assistant_text: str) -> None:
-        if self._suppress_memory_write or not self.memory_config.enabled:
+        if (
+            self.agent_mode == "hermes"
+            or self._suppress_memory_write
+            or not self.memory_config.enabled
+        ):
             return
         self.trace.mark("memory_write_started", chars=len(user_text) + len(assistant_text))
         try:
@@ -739,7 +777,10 @@ class ConversationEngine:
         except Exception as exc:
             self.trace.mark("memory_write_failed", error=str(exc))
 
-    def _messages_for_generation(self, memory_context: str) -> list[ChatMessage]:
+    def _messages_for_generation(self, memory_context: str, user_text: str) -> list[ChatMessage]:
+        if self.agent_mode == "hermes":
+            return [{"role": "user", "content": user_text}]
+
         if not memory_context:
             messages = list(self.history)
         else:
@@ -747,7 +788,7 @@ class ConversationEngine:
             rest = self.history[1:]
             memory_message: ChatMessage = {"role": "system", "content": memory_context}
             messages = system + [memory_message] + rest
-            
+
         if self.tool_registry:
             tool_names = ", ".join(s["function"]["name"] for s in self.tool_registry.get_all_schemas())
             if tool_names:

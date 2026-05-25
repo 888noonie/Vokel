@@ -45,6 +45,7 @@ class AutoFollowupSchedulerTests(unittest.IsolatedAsyncioTestCase):
 class ConversationEngineAutoFollowupTests(unittest.IsolatedAsyncioTestCase):
     async def test_submit_auto_followup_skips_when_user_spoke_last(self) -> None:
         llm = MagicMock()
+        llm.cancel_active = AsyncMock()
         playback = MagicMock()
         playback.stop = AsyncMock()
         engine = ConversationEngine(llm=llm, playback=playback, echo_tokens=False)
@@ -57,6 +58,7 @@ class ConversationEngineAutoFollowupTests(unittest.IsolatedAsyncioTestCase):
             yield "Still here?"
 
         llm = MagicMock()
+        llm.cancel_active = AsyncMock()
         llm.stream_chat = dummy_stream
         playback = MagicMock()
         playback.stop = AsyncMock()

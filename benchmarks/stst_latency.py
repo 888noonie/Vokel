@@ -60,6 +60,9 @@ class ScriptedLlm:
                 await asyncio.sleep(self.token_gap_s)
             yield TextDeltaEvent(token)
 
+    async def cancel_active(self) -> None:
+        return None
+
 
 class BenchmarkPlaybackSink:
     def __init__(self, first_audio_ms: float = 0):
