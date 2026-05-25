@@ -13,9 +13,10 @@ Every architectural choice should protect that loop.
 ## Current Shape
 
 - Desktop reference core first.
-- Android Foreground Service later, after behavior is measured locally.
+- Android companion and Foreground Service next, after desktop behavior has been measured locally.
 - Local-first by default.
-- Cloud services may be used for research or audit, but core voice-loop behavior should not depend on them.
+- External agents and cloud services may be used when explicitly selected, but core voice-loop behavior should not depend on them.
+- Vokel owns voice capture, playback, interruption, routing, consent, and audit; external agents own their own tools and memory.
 
 ## Engineering Rules
 
@@ -25,6 +26,7 @@ Every architectural choice should protect that loop.
 - Keep every stream cancellable.
 - Do not let microphone, playback, model, or tool code leak through the whole system.
 - Register new external capabilities as `ToolDefinition` entries in the `ToolRegistry`.
+- In external-agent mode, do not duplicate agent-owned tools inside Vokel; expose state and consent instead.
 - Sanitize LLM output for TTS through the `sanitize_for_speech` path; never read raw Markdown or URLs aloud.
 - Use deterministic forced tool execution for capabilities that small models cannot reliably self-invoke.
 - Prefer named audio profiles over scattering one-off VAD settings through commands.

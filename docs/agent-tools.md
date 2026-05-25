@@ -1,7 +1,8 @@
 # Agent Tools
 
-Vokel supports a small agent tool layer for capabilities that should stay outside
-the model itself. Three production tools are registered by default:
+In Built-in mode, Vokel supports a small agent tool layer for capabilities that
+should stay outside the model itself. Three production tools are registered by
+default:
 
 - `search_web` — SerpApi DuckDuckGo with BBC RSS shortcut and page scraping
 - `search_image` — Unsplash photo search with inline transcript rendering
@@ -9,7 +10,7 @@ the model itself. Three production tools are registered by default:
 
 ## Runtime Contract
 
-The conversation engine keeps inference and tool execution separate:
+The Built-in conversation engine keeps inference and tool execution separate:
 
 - `LocalInferenceClient` streams OpenAI-compatible text and tool-call events.
 - `ToolRegistry` owns available tool schemas and Python implementations.
@@ -94,6 +95,14 @@ fire on `tool_call_forced` / `tool_call_started` and clear on
 Users can audition any of the 28 bundled Kokoro voices before starting a
 session. The preview sends a `preview_voice` websocket command that synthesizes
 a short sample without creating transcript entries or touching memory state.
+
+## External Agent Boundary
+
+When Vokel is connected to an external agent stack such as Hermes, these
+Vokel-owned tools are disabled. The external agent owns its own tools, memory,
+and provider configuration. Vokel shows the active backend and consent state,
+but does not duplicate the external agent's browser, email, repository, or
+messaging tools.
 
 ## Android Port Notes
 
