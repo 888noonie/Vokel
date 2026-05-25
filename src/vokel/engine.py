@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from contextlib import suppress
 from typing import Literal
@@ -153,7 +154,9 @@ class ConversationEngine:
     async def interrupt(self) -> None:
         cancel = getattr(self.agent, "cancel_active", None)
         if cancel is not None:
-            await cancel()
+            result = cancel()
+            if inspect.isawaitable(result):
+                await result
         if self._current_generation and not self._current_generation.done():
             self.trace.mark("interruption_requested")
             self._current_generation.cancel()

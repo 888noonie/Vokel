@@ -2,10 +2,15 @@
 
 **Voice-invoked local intelligence.**
 
-Vokel is your private, voice-first AI that runs entirely on your own hardware.
-No cloud. No subscription. No data leaving your machine. You speak, it acts.
+Vokel is a local-first voice interface for talking naturally with local LLMs and
+external agent stacks. It preserves the live loop that makes voice feel useful:
 
 You speak. It answers. You interrupt. It stops. It listens again.
+
+By default, Vokel is designed for local control: local ASR, local TTS, local
+memory, and OpenAI-compatible local model servers. When you deliberately connect
+an external agent such as Hermes, Vokel remains the voice, interruption, consent,
+and audit layer while the agent owns its own reasoning and tools.
 
 Interruption works hands-free with a headset (separate mic and speaker). On
 laptop speakers the BARGE IN button in the web dashboard is the reliable path,
@@ -20,14 +25,16 @@ speaking.
 
 ## What It Does
 
-Vokel turns any local LLM into a live conversational agent you control with
-your voice:
+Vokel gives you one dependable voice surface for different kinds of
+intelligence:
 
 - **Talk naturally** — speak a question, get a spoken answer, interrupt mid-sentence
 - **Invoke tools by voice** — "Search for the latest UK news", "Show me an image of the Alps"
-- **Stay private** — everything runs locally: ASR, LLM, TTS, memory, tools
+- **Stay local by default** — local ASR, local TTS, local memory, and local model endpoints
 - **Choose your model** — works with any OpenAI-compatible server (LM Studio, llama.cpp, MLC LLM)
+- **Connect an agent** — use Hermes gateway mode when you want to speak directly with an external agent stack
 - **Choose your voice** — 28 bundled Kokoro voices with preview and speed control
+- **Keep consent visible** — Vokel owns interruption, routing, and future execution confirmation
 
 ## Architecture
 
@@ -39,6 +46,20 @@ latency-traced:
 3. **Engine** — agent reasoning loop with tool registry, memory retrieval, and LLM streaming
 4. **Phrase chunking** — split streamed tokens into speakable phrases with TTS sanitization
 5. **Playback** — Kokoro ONNX synthesis with barge-in cancellation (0.1 ms stop)
+
+## Modes
+
+Vokel currently has two reasoning modes:
+
+| Mode | Reasoning owner | Tool owner | Best for |
+| --- | --- | --- | --- |
+| **Built-in** | Local OpenAI-compatible model through `LocalInferenceClient` | Vokel `ToolRegistry` | Private local chat, deterministic search/media tools, offline-first experimentation |
+| **Hermes** | Hermes API Server | Hermes | Speaking directly with a richer external agent stack while keeping Vokel's voice, interruption, and consent layer |
+
+In Hermes mode, Vokel does not duplicate Hermes tools. Hermes may be backed by
+XAI/Grok, OpenRouter, LM Studio, or another provider depending on the user's
+Hermes configuration. Vokel only needs the Hermes gateway URL and optional API
+key.
 
 ## Agent Tools
 
@@ -105,6 +126,22 @@ The web dashboard exposes the same opt-in toggle for browser and local sessions.
 The engine talks to a small memory interface rather than SQLite directly, which
 keeps the Android port free to use its native SQLite layer later.
 
+## Product Direction
+
+Vokel is not intended to become a heavy agent dashboard. The long-term direction
+is a dependable voice layer that can:
+
+- speak with any local LLM you install
+- connect to external agent stacks when explicitly selected
+- keep privacy state and active backend visible
+- require confirmation before speech becomes high-risk action
+- organize interaction history only when it helps the user understand and recall
+  their own work
+
+Project stance:
+
+> I build it for myself, with respect for others.
+
 ## Project Memory
 
 - `AGENTS.md` keeps contributor and AI-agent operating rules in one place.
@@ -114,6 +151,7 @@ keeps the Android port free to use its native SQLite layer later.
 - `docs/memory.md` explains the opt-in recall path and timing budget.
 - `docs/agent-tools.md` explains the tool registry, hybrid web search, page scraping, image search, speech sanitization, and voice preview.
 - `docs/agent-extensions.md` explains Hermes gateway mode (Vokel as voice front-end).
+- `docs/android-termux-hermes.md` tracks the Android companion path and Termux Hermes target.
 - `docs/model-matrix.md` tracks backend candidates before deeper integration.
 - `docs/audio-setup.md` explains the first real microphone benchmark path.
 
@@ -131,7 +169,7 @@ Or using [uv](https://docs.astral.sh/uv/) (recommended):
 uv venv .venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
-```INFO:     127.0.0.1:33950 - "GET /favicon.svg HTTP/1.1" 304 Not Modified
+```
 
 Optional audio dependencies:
 
@@ -199,6 +237,30 @@ make start
 ```
 
 Open `http://localhost:8000` in your browser.
+
+## Hermes Gateway Mode
+
+Hermes mode lets Vokel act as a realtime voice front-end for Hermes:
+
+```bash
+# ~/.hermes/.env
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8642
+# optional for local development
+API_SERVER_KEY=change-me-local-dev
+```
+
+Start Hermes separately:
+
+```bash
+hermes gateway run
+```
+
+Then open the Vokel dashboard, choose **Agent Extension -> HERMES**, and set the
+gateway URL, normally `http://127.0.0.1:8642`. Leave the API key blank if the
+Hermes gateway is running without one.
+
+See `docs/agent-extensions.md` for details.
 
 ## Test
 

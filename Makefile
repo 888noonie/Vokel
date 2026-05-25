@@ -26,7 +26,7 @@ build:
 
 start: build
 	@echo "Starting Vokel Web Server on http://$(HOST):$(PORT)..."
-	.venv/bin/python -m vokel.cli --web --host $(HOST) --port $(PORT)
+	PYTHONPATH=src .venv/bin/python -m vokel.cli --web --host $(HOST) --port $(PORT)
 
 stop:
 	@echo "Stopping any process running on port $(PORT)..."
@@ -45,7 +45,7 @@ dev-frontend:
 
 test:
 	@echo "Running tests..."
-	PYTHONPATH=. .venv/bin/pytest -v
+	PYTHONPATH=src .venv/bin/pytest -v
 
 clean:
 	@echo "Cleaning caches and builds..."

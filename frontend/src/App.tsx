@@ -21,11 +21,16 @@ import {
   Clapperboard,
   Wrench,
   Bot,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { LatencyScoreboard } from "./components/LatencyScoreboard";
 import { WaveformVisualizer } from "./components/WaveformVisualizer";
 import { TranscriptStream } from "./components/TranscriptStream";
 import type { Message } from "./components/TranscriptStream";
+import { WorkspaceTabs } from "./components/WorkspaceTabs";
+import type { AgentEvent, ExecuteState } from "./components/AgentConsole";
+import type { ChatSnapshot, WorkspaceTab } from "./components/WorkspaceTabs";
 import { useAudioStreamer } from "./hooks/useAudioStreamer";
 import { playToolEndClick, playToolStartClick } from "./audio/toolCue";
 
@@ -70,6 +75,18 @@ const kokoroVoices = [
   "bm_lewis",
 ];
 
+const voicePrefsKey = "vokel.voicePrefs.v1";
+const previousChatsKey = "vokel.previousChats.v1";
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function App() {
   const [mode, setMode] = useState<Mode>("browser");
   const [isConnected, setIsConnected] = useState(false);
@@ -82,13 +99,32 @@ function App() {
   const [selectedMemoryIds, setSelectedMemoryIds] = useState<Set<number>>(new Set());
   const [memoryDraft, setMemoryDraft] = useState("");
   const [isPaused, setIsPaused] = useState(false);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("settings");
+  const [previousChats, setPreviousChats] = useState<ChatSnapshot[]>(() =>
+    loadJson<ChatSnapshot[]>(previousChatsKey, [])
+  );
+  const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
+  const [executeState, setExecuteState] = useState<ExecuteState>({
+    armed: false,
+    risk: "none",
+    detail: "idle",
+  });
 
   // Settings
+  const savedVoicePrefs = loadJson(voicePrefsKey, {
+    playbackBackend: "kokoro",
+    voice: "af_heart",
+    ttsSpeed: 1,
+    outputMuted: false,
+    outputVolume: 1,
+  });
   const [lmStudioUrl, setLmStudioUrl] = useState("http://localhost:1234/v1/chat/completions");
   const [lmStudioModel, setLmStudioModel] = useState("gemma-4-e4b-it-ultra-uncensored-heretic");
-  const [playbackBackend, setPlaybackBackend] = useState("kokoro");
-  const [voice, setVoice] = useState("af_heart");
-  const [ttsSpeed, setTtsSpeed] = useState(1);
+  const [playbackBackend, setPlaybackBackend] = useState(savedVoicePrefs.playbackBackend);
+  const [voice, setVoice] = useState(savedVoicePrefs.voice);
+  const [ttsSpeed, setTtsSpeed] = useState(savedVoicePrefs.ttsSpeed);
+  const [outputMuted, setOutputMuted] = useState(savedVoicePrefs.outputMuted);
+  const [outputVolume, setOutputVolume] = useState(savedVoicePrefs.outputVolume);
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
   const [autoFollowupEnabled, setAutoFollowupEnabled] = useState(true);
@@ -109,9 +145,28 @@ function App() {
   const previewPlaybackTimeRef = useRef(0);
   const toolAudioContextRef = useRef<AudioContext | null>(null);
   const toolCueActiveRef = useRef(false);
+  const messagesRef = useRef<Message[]>([]);
 
   // Hook for audio streaming and local queue scheduling in browser mode
-  const { startStreaming, stopStreaming, isStreaming, micVolume } = useAudioStreamer();
+  const { startStreaming, stopStreaming, isStreaming, micVolume } = useAudioStreamer({
+    outputMuted,
+    outputVolume,
+  });
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      voicePrefsKey,
+      JSON.stringify({ playbackBackend, voice, ttsSpeed, outputMuted, outputVolume })
+    );
+  }, [playbackBackend, voice, ttsSpeed, outputMuted, outputVolume]);
+
+  useEffect(() => {
+    window.localStorage.setItem(previousChatsKey, JSON.stringify(previousChats));
+  }, [previousChats]);
 
   const getToolAudioContext = () => {
     if (!toolAudioContextRef.current) {
@@ -135,6 +190,7 @@ function App() {
   };
 
   const playPreviewAudio = async (blob: Blob) => {
+    if (outputMuted) return;
     const arrayBuffer = await blob.arrayBuffer();
     const float32Data = new Float32Array(arrayBuffer);
     if (float32Data.length === 0) return;
@@ -152,7 +208,10 @@ function App() {
 
     const source = audioContext.createBufferSource();
     source.buffer = buffer;
-    source.connect(audioContext.destination);
+    const gain = audioContext.createGain();
+    gain.gain.value = outputVolume;
+    source.connect(gain);
+    gain.connect(audioContext.destination);
 
     const startTime = Math.max(audioContext.currentTime, previewPlaybackTimeRef.current);
     source.start(startTime);
@@ -197,6 +256,7 @@ function App() {
       setIsSessionActive(false);
       setStatus("idle");
       setIsPaused(false);
+      setExecuteState({ armed: false, risk: "none", detail: "idle" });
       void stopToolCue(false);
       stopVoicePreview();
       stopStreaming();
@@ -219,6 +279,34 @@ function App() {
         const data = JSON.parse(event.data);
 
         switch (data.type) {
+          case "agent_event": {
+            const now = new Date();
+            const event: AgentEvent = {
+              id: `${now.getTime()}-${Math.random()}`,
+              event: String(data.event ?? "event"),
+              level: data.level === "error" || data.level === "warning" ? data.level : "info",
+              backend: String(data.backend ?? "vokel"),
+              detail: String(data.detail ?? ""),
+              timestamp: now.toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              }),
+              session_id: typeof data.session_id === "string" ? data.session_id : null,
+              risk: typeof data.risk === "string" ? data.risk : undefined,
+            };
+            setAgentEvents((prev) => [...prev.slice(-79), event]);
+            break;
+          }
+
+          case "execute_state":
+            setExecuteState({
+              armed: Boolean(data.armed),
+              risk: String(data.risk ?? "none"),
+              detail: String(data.detail ?? ""),
+            });
+            break;
+
           case "session_started":
             setIsSessionActive(true);
             setIsPaused(false);
@@ -241,6 +329,7 @@ function App() {
             setStatus("idle");
             setIsPaused(false);
             setActiveHermesSessionId(null);
+            setExecuteState({ armed: false, risk: "none", detail: "idle" });
             void stopToolCue(false);
             stopVoicePreview();
             stopStreaming();
@@ -402,6 +491,8 @@ function App() {
 
     setMessages([]);
     setMetrics({});
+    setAgentEvents([]);
+    setExecuteState({ armed: false, risk: "none", detail: "idle" });
     setError(null);
 
     socketRef.current.send(
@@ -430,6 +521,7 @@ function App() {
 
   const handleStopSession = () => {
     if (!socketRef.current || !isConnected) return;
+    persistCurrentChat();
 
     socketRef.current.send(
       JSON.stringify({
@@ -446,6 +538,42 @@ function App() {
         type: "interrupt",
       })
     );
+  };
+
+  const persistCurrentChat = () => {
+    const transcript = messagesRef.current.filter((message) => !message.isPartial);
+    if (transcript.length === 0) return;
+    const firstUser = transcript.find((message) => message.role === "user");
+    const title = (firstUser?.text ?? transcript[0].text).slice(0, 72) || "Untitled session";
+    const snapshot: ChatSnapshot = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      title,
+      createdAt: new Date().toISOString(),
+      backend: agentBackend,
+      messages: transcript,
+    };
+    setPreviousChats((current) => [snapshot, ...current].slice(0, 20));
+  };
+
+  const restorePreviousChat = (chat: ChatSnapshot) => {
+    setMessages(chat.messages);
+    setWorkspaceTab("previous");
+  };
+
+  const clearPreviousChats = () => {
+    setPreviousChats([]);
+  };
+
+  const handleArmExecute = () => {
+    sendControl("arm_execute", { risk: "medium" });
+  };
+
+  const handleCancelExecute = () => {
+    sendControl("cancel_execute");
+  };
+
+  const handleConfirmExecute = () => {
+    sendControl("confirm_execute");
   };
 
   const sendControl = (type: string, payload: Record<string, unknown> = {}) => {
@@ -647,13 +775,37 @@ function App() {
                 </div>
               )}
 
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOutputMuted((muted) => !muted)}
+                  className={`touch-button rounded-xl border px-4 text-sm font-bold tracking-wide flex items-center justify-center space-x-2 transition-all ${
+                    outputMuted
+                      ? "border-amber-500/35 bg-amber-500/10 text-amber-100"
+                      : "border-zinc-850 bg-zinc-950 text-zinc-300 hover:bg-zinc-900"
+                  }`}
+                >
+                  {outputMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                  <span>{outputMuted ? "MUTED" : "MUTE"}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!isSessionActive}
+                  onClick={handlePauseResume}
+                  className="touch-button rounded-xl border border-zinc-850 bg-zinc-950 px-4 text-sm font-bold tracking-wide flex items-center justify-center space-x-2 text-zinc-300 transition-all hover:bg-zinc-900 disabled:opacity-40"
+                >
+                  {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                  <span>{isPaused ? "RESUME" : "PAUSE"}</span>
+                </button>
+              </div>
+
               <button
                 type="button"
                 role="switch"
                 aria-checked={autoFollowupEnabled}
                 disabled={isSessionActive || agentBackend === "hermes"}
                 onClick={() => setAutoFollowupEnabled((enabled) => !enabled)}
-                className="touch-button voyce-panel-subtle w-full rounded-2xl px-4 py-3 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
+                className="touch-button vokel-panel-subtle w-full rounded-2xl px-4 py-3 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
               >
                 <span className="flex items-center justify-between gap-4">
                   <span>
@@ -724,15 +876,8 @@ function App() {
                       <span>BARGE IN</span>
                     </button>
                     <button
-                      onClick={handlePauseResume}
-                      className="touch-button bg-zinc-950 border border-zinc-850 hover:bg-zinc-900 px-4 rounded-xl text-sm font-bold tracking-wide flex items-center justify-center space-x-2 text-zinc-300 transition-all"
-                    >
-                      {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-                      <span>{isPaused ? "RESUME" : "PAUSE"}</span>
-                    </button>
-                    <button
                       onClick={handleReset}
-                      className="touch-button bg-zinc-950 border border-zinc-850 hover:bg-zinc-900 px-4 rounded-xl text-sm font-bold tracking-wide flex items-center justify-center space-x-2 text-zinc-300 transition-all"
+                      className="touch-button col-span-2 bg-zinc-950 border border-zinc-850 hover:bg-zinc-900 px-4 rounded-xl text-sm font-bold tracking-wide flex items-center justify-center space-x-2 text-zinc-300 transition-all"
                     >
                       <RotateCcw className="w-4 h-4" />
                       <span>RESET</span>
@@ -867,7 +1012,7 @@ function App() {
                   aria-checked={state}
                   disabled={isSessionActive || agentBackend === "hermes"}
                   onClick={() => setter((v) => !v)}
-                  className="touch-button voyce-panel-subtle w-full rounded-2xl px-4 py-2.5 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
+                  className="touch-button vokel-panel-subtle w-full rounded-2xl px-4 py-2.5 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
                 >
                   <span className="flex items-center justify-between gap-4">
                     <span>
@@ -1017,6 +1162,33 @@ function App() {
 
               <div>
                 <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                  Voice Effects
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { label: "Clear", speed: 0.9 },
+                    { label: "Natural", speed: 1 },
+                    { label: "Brisk", speed: 1.12 },
+                  ].map((profile) => (
+                    <button
+                      key={profile.label}
+                      type="button"
+                      disabled={isSessionActive || playbackBackend !== "kokoro"}
+                      onClick={() => setTtsSpeed(profile.speed)}
+                      className={`touch-button rounded-xl border px-3 text-xs font-bold uppercase tracking-wide transition ${
+                        Math.abs(ttsSpeed - profile.speed) < 0.01
+                          ? "border-purple-500/35 bg-purple-500/10 text-purple-100"
+                          : "border-zinc-850 bg-zinc-950 text-zinc-400 hover:bg-zinc-900"
+                      } disabled:opacity-40`}
+                    >
+                      {profile.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
                   Speech Speed: {ttsSpeed.toFixed(2)}x
                 </label>
                 <input
@@ -1029,6 +1201,35 @@ function App() {
                   onChange={(e) => setTtsSpeed(Number(e.target.value))}
                   className="w-full accent-purple-500"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                  Browser Output Volume: {outputMuted ? "Muted" : `${Math.round(outputVolume * 100)}%`}
+                </label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOutputMuted((muted) => !muted)}
+                    className="touch-button shrink-0 rounded-xl border border-zinc-850 bg-zinc-950 px-3 text-zinc-300 transition hover:bg-zinc-900"
+                    aria-label={outputMuted ? "Unmute output" : "Mute output"}
+                    title={outputMuted ? "Unmute output" : "Mute output"}
+                  >
+                    {outputMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                  </button>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={outputVolume}
+                    onChange={(e) => {
+                      setOutputVolume(Number(e.target.value));
+                      setOutputMuted(false);
+                    }}
+                    className="w-full accent-purple-500"
+                  />
+                </div>
               </div>
 
               <button
@@ -1147,6 +1348,26 @@ function App() {
 
           {/* Chat transcript stream */}
           <TranscriptStream messages={messages} status={status} />
+
+          <WorkspaceTabs
+            activeTab={workspaceTab}
+            onTabChange={setWorkspaceTab}
+            voice={voice}
+            ttsSpeed={ttsSpeed}
+            outputMuted={outputMuted}
+            outputVolume={outputVolume}
+            previousChats={previousChats}
+            onRestoreChat={restorePreviousChat}
+            onClearPreviousChats={clearPreviousChats}
+            backend={agentBackend}
+            isSessionActive={isSessionActive}
+            activeSessionId={activeHermesSessionId}
+            events={agentEvents}
+            executeState={executeState}
+            onArmExecute={handleArmExecute}
+            onCancelExecute={handleCancelExecute}
+            onConfirmExecute={handleConfirmExecute}
+          />
         </div>
 
         {/* Bottom row: latency budget scorecard */}

@@ -166,6 +166,13 @@ textarea {
   background: rgba(76, 5, 25, 0.28);
 }
 
+.agent-console-log {
+  max-height: 18rem;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(168, 85, 247, 0.35) rgba(24, 24, 31, 0.4);
+}
+
 @media (max-width: 640px) {
   button,
   input,

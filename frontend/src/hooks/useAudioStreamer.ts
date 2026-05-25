@@ -20,7 +20,12 @@ function resampleLinear(input: Float32Array, fromRate: number, toRate: number): 
   return out;
 }
 
-export const useAudioStreamer = () => {
+interface AudioStreamerOptions {
+  outputMuted: boolean;
+  outputVolume: number;
+}
+
+export const useAudioStreamer = ({ outputMuted, outputVolume }: AudioStreamerOptions) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [micVolume, setMicVolume] = useState(0);
 
@@ -33,9 +38,16 @@ export const useAudioStreamer = () => {
 
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextPlaybackTimeRef = useRef<number>(0);
+  const outputGainRef = useRef<GainNode | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
   const socketListenerRef = useRef<((event: MessageEvent) => void) | null>(null);
+
+  useEffect(() => {
+    if (outputGainRef.current) {
+      outputGainRef.current.gain.value = outputMuted ? 0 : outputVolume;
+    }
+  }, [outputMuted, outputVolume]);
 
   const startStreaming = async (socket: WebSocket) => {
     try {
@@ -74,6 +86,10 @@ export const useAudioStreamer = () => {
         sampleRate: 24_000,
       });
       playbackContextRef.current = playbackContext;
+      const outputGain = playbackContext.createGain();
+      outputGain.gain.value = outputMuted ? 0 : outputVolume;
+      outputGain.connect(playbackContext.destination);
+      outputGainRef.current = outputGain;
 
       const stopAllPlayback = () => {
         activeSourcesRef.current.forEach((src) => {
@@ -98,7 +114,7 @@ export const useAudioStreamer = () => {
 
           const source = playbackContext.createBufferSource();
           source.buffer = buffer;
-          source.connect(playbackContext.destination);
+          source.connect(outputGainRef.current ?? playbackContext.destination);
 
           const startTime = Math.max(playbackContext.currentTime, nextPlaybackTimeRef.current);
           source.start(startTime);
@@ -191,6 +207,8 @@ export const useAudioStreamer = () => {
     });
     activeSourcesRef.current = [];
     nextPlaybackTimeRef.current = 0;
+    outputGainRef.current?.disconnect();
+    outputGainRef.current = null;
 
     if (playbackContextRef.current) {
       playbackContextRef.current.close().catch(() => {});

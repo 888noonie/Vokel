@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 from fastapi.testclient import TestClient
 
 from vokel.web import app
+
+
+def receive_expected(websocket: any, target_types: tuple[str, ...]) -> dict[str, any]:
+    while True:
+        msg = websocket.receive()
+        if "text" in msg:
+            data = json.loads(msg["text"])
+            if data.get("type") in target_types:
+                return data
 
 
 def test_root_endpoint_returns_api_status() -> None:
@@ -73,20 +81,11 @@ def test_websocket_browser_mode_flow(
             "model": "mock-model",
         })
 
-        # Helper to receive non-telemetry text messages and safely ignore binary messages
-        def receive_expected(target_types: tuple[str, ...]) -> dict[str, any]:
-            while True:
-                msg = websocket.receive()
-                if "text" in msg:
-                    data = json.loads(msg["text"])
-                    if data.get("type") in target_types:
-                        return data
-
         # Receive session started and listening status
-        res1 = receive_expected(("session_started",))
+        res1 = receive_expected(websocket, ("session_started",))
         assert res1["mode"] == "browser"
 
-        res2 = receive_expected(("status",))
+        res2 = receive_expected(websocket, ("status",))
         assert res2["status"] == "listening"
 
         # Send binary float32 data
@@ -94,14 +93,14 @@ def test_websocket_browser_mode_flow(
         websocket.send_bytes(audio_frame.tobytes())
 
         # Receive transcripts
-        res3 = receive_expected(("partial_transcript", "final_transcript"))
+        res3 = receive_expected(websocket, ("partial_transcript", "final_transcript"))
         assert res3["type"] in ("partial_transcript", "final_transcript")
 
         # End session
         websocket.send_json({
             "type": "stop_session",
         })
-        res_stopped = receive_expected(("session_stopped",))
+        res_stopped = receive_expected(websocket, ("session_stopped",))
         assert res_stopped["type"] == "session_stopped"
 
 
@@ -134,21 +133,12 @@ def test_websocket_barge_in_bypasses(
             "mode": "browser",
         })
         
-        # Helper to receive non-telemetry text messages
-        def receive_expected(target_types: tuple[str, ...]) -> dict[str, any]:
-            while True:
-                msg = websocket.receive()
-                if "text" in msg:
-                    data = json.loads(msg["text"])
-                    if data.get("type") in target_types:
-                        return data
-
-        receive_expected(("session_started",))
-        receive_expected(("status",))
+        receive_expected(websocket, ("session_started",))
+        receive_expected(websocket, ("status",))
 
         # Send binary packet
         websocket.send_bytes(np.zeros(800, dtype=np.float32).tobytes())
-        res = receive_expected(("partial_transcript", "stable_transcript"))
+        res = receive_expected(websocket, ("partial_transcript", "stable_transcript"))
         assert res["type"] in ("partial_transcript", "stable_transcript")
 
 
@@ -172,11 +162,36 @@ def test_websocket_voice_preview_does_not_start_session(mock_kokoro_class: Magic
             "tts_speed": 1.0,
         })
 
-        started = json.loads(websocket.receive_text())
+        started = receive_expected(websocket, ("voice_preview_started",))
         assert started == {"type": "voice_preview_started", "voice": "af_heart"}
 
         binary = websocket.receive_bytes()
         assert len(binary) == 4000
 
-        finished = json.loads(websocket.receive_text())
+        finished = receive_expected(websocket, ("voice_preview_finished",))
         assert finished == {"type": "voice_preview_finished", "voice": "af_heart"}
+
+
+def test_websocket_execute_consent_scaffold() -> None:
+    client = TestClient(app)
+    with client.websocket_connect("/api/ws") as websocket:
+        initial = receive_expected(websocket, ("execute_state",))
+        assert initial["armed"] is False
+        assert initial["risk"] == "none"
+
+        websocket.send_json({"type": "arm_execute", "risk": "medium"})
+        armed = receive_expected(websocket, ("execute_state",))
+        assert armed["armed"] is True
+        assert armed["risk"] == "medium"
+
+        websocket.send_json({"type": "confirm_execute"})
+        event = receive_expected(websocket, ("agent_event",))
+        while event["event"] != "execute_confirm_ignored":
+            event = receive_expected(websocket, ("agent_event",))
+        assert event["level"] == "warning"
+
+        websocket.send_json({"type": "cancel_execute"})
+        cancelled = receive_expected(websocket, ("execute_state",))
+        while cancelled["armed"] is not False:
+            cancelled = receive_expected(websocket, ("execute_state",))
+        assert cancelled["armed"] is False

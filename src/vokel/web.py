@@ -163,6 +163,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     auto_followup_scheduler: AutoFollowupScheduler | None = None
     auto_followup_enabled = True
     auto_followup_seconds = DEFAULT_AUTO_FOLLOWUP_SECONDS
+    execute_armed = False
+    execute_risk = "none"
+    current_agent_backend = "vokel"
 
     async def run_auto_followup() -> None:
         if engine is None or session_paused:
@@ -229,10 +232,40 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     async def send_bytes(data: bytes) -> None:
         await websocket.send_bytes(data)
 
+    async def send_agent_event(
+        event: str,
+        *,
+        backend: str | None = None,
+        detail: str = "",
+        level: str = "info",
+        **fields: Any,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "type": "agent_event",
+            "event": event,
+            "level": level,
+            "backend": backend or current_agent_backend,
+            "detail": detail,
+        }
+        payload.update(fields)
+        await send_json(payload)
+
+    async def send_execute_state(detail: str = "") -> None:
+        await send_json({
+            "type": "execute_state",
+            "armed": execute_armed,
+            "risk": execute_risk,
+            "detail": detail,
+        })
+
     try:
+        await send_agent_event("socket_connected", detail="WebSocket accepted", backend="vokel")
+        await send_execute_state("idle")
         while True:
             # We can receive either JSON messages or raw binary frames
             message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
 
             # Handle JSON text configuration
             if "text" in message:
@@ -240,6 +273,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 msg_type = data.get("type")
 
                 if msg_type == "start_session":
+                    execute_armed = False
+                    execute_risk = "none"
+                    await send_execute_state("idle")
                     # Clean up any existing session
                     if local_loop_task and not local_loop_task.done():
                         local_loop_task.cancel()
@@ -252,6 +288,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     agent_backend_name = str(data.get("agent_backend", "builtin")).strip().lower()
                     if agent_backend_name not in ("builtin", "hermes"):
                         agent_backend_name = "builtin"
+                    current_agent_backend = agent_backend_name
+                    await send_agent_event(
+                        "backend_selected",
+                        backend=agent_backend_name,
+                        detail=f"{agent_backend_name} mode requested",
+                    )
                     hermes_mode = agent_backend_name == "hermes"
                     agent_mode: AgentMode = "hermes" if hermes_mode else "builtin"
                     auto_followup_enabled = bool(data.get("auto_followup", True)) and not hermes_mode
@@ -302,14 +344,31 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         lm_config = LmStudioConfig(url=url, model=model)
                         agent_client = LocalInferenceClient(lm_config)
                     await agent_client.__aenter__()
+                    await send_agent_event(
+                        "agent_client_ready",
+                        backend=agent_backend_name,
+                        detail="Agent client context opened",
+                    )
 
                     if hermes_mode and isinstance(agent_client, HermesAgentClient):
                         assert agent_client._client is not None
                         try:
                             await check_gateway_health(hermes_config, agent_client._client)
+                            await send_agent_event(
+                                "gateway_health_ok",
+                                backend="hermes",
+                                detail=f"Hermes gateway reachable at {hermes_config.base_url}",
+                                session_id=agent_client.session_id,
+                            )
                         except InferenceError as exc:
                             await agent_client.__aexit__(None, None, None)
                             agent_client = None
+                            await send_agent_event(
+                                "gateway_health_failed",
+                                backend="hermes",
+                                level="error",
+                                detail=str(exc),
+                            )
                             await send_json({"type": "error", "message": str(exc)})
                             continue
 
@@ -403,6 +462,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         if isinstance(agent_client, HermesAgentClient):
                             session_payload["hermes_session_id"] = agent_client.session_id
                         await send_json(session_payload)
+                        await send_agent_event(
+                            "session_started",
+                            backend=agent_backend_name,
+                            detail="Local hardware session started",
+                            mode="local",
+                            session_id=(
+                                agent_client.session_id
+                                if isinstance(agent_client, HermesAgentClient)
+                                else None
+                            ),
+                        )
                         await send_memory_facts(active_memory_store)
 
                     elif session_mode == "browser":
@@ -447,6 +517,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         if isinstance(agent_client, HermesAgentClient):
                             browser_session_payload["hermes_session_id"] = agent_client.session_id
                         await send_json(browser_session_payload)
+                        await send_agent_event(
+                            "session_started",
+                            backend=agent_backend_name,
+                            detail="Browser audio session started",
+                            mode="browser",
+                            session_id=(
+                                agent_client.session_id
+                                if isinstance(agent_client, HermesAgentClient)
+                                else None
+                            ),
+                        )
                         await send_json({"type": "status", "status": "listening"})
                         if auto_followup_scheduler:
                             auto_followup_scheduler.arm_listening()
@@ -495,6 +576,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         })
 
                 elif msg_type == "stop_session":
+                    await send_agent_event("session_stop_requested", detail="Stop requested", backend="vokel")
                     cancel_auto_followup()
                     if local_loop_task and not local_loop_task.done():
                         local_loop_task.cancel()
@@ -506,10 +588,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     agent_client = None
                     session_mode = None
                     session_paused = False
+                    execute_armed = False
+                    execute_risk = "none"
+                    await send_execute_state("idle")
                     await send_json({"type": "session_stopped"})
+                    await send_agent_event("session_stopped", detail="Session stopped", backend="vokel")
 
                 elif msg_type == "interrupt":
                     if engine:
+                        await send_agent_event("interrupt_requested", detail="Barge-in requested", backend="vokel")
                         cancel_auto_followup()
                         await engine.interrupt()
                         await send_json({"type": "status", "status": "listening"})
@@ -518,6 +605,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                 elif msg_type == "pause_session":
                     if engine:
+                        await send_agent_event("session_paused", detail="Session paused", backend="vokel")
                         session_paused = True
                         cancel_auto_followup()
                         await engine.interrupt()
@@ -527,6 +615,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                 elif msg_type == "resume_session":
                     if engine:
+                        await send_agent_event("session_resumed", detail="Session resumed", backend="vokel")
                         session_paused = False
                         if session_mode == "browser":
                             browser_asr_stream = browser_asr.create_stream()
@@ -543,8 +632,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                 elif msg_type == "reset_session":
                     if engine:
+                        await send_agent_event("session_reset_requested", detail="Reset requested", backend="vokel")
                         cancel_auto_followup()
                         await engine.reset_conversation()
+                        execute_armed = False
+                        execute_risk = "none"
+                        await send_execute_state("idle")
                         if session_mode == "browser":
                             browser_asr_stream = browser_asr.create_stream()
                             browser_last_text = ""
@@ -578,6 +671,38 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     if active_memory_store:
                         await active_memory_store.delete_fact(int(data.get("id", 0)))
                     await send_memory_facts(active_memory_store)
+
+                elif msg_type == "arm_execute":
+                    execute_armed = True
+                    execute_risk = str(data.get("risk", "medium"))
+                    await send_execute_state("execute armed")
+                    await send_agent_event(
+                        "execute_armed",
+                        backend="vokel",
+                        detail="Execution consent armed",
+                        risk=execute_risk,
+                    )
+
+                elif msg_type == "cancel_execute":
+                    execute_armed = False
+                    execute_risk = "none"
+                    await send_execute_state("idle")
+                    await send_agent_event(
+                        "execute_cancelled",
+                        backend="vokel",
+                        detail="Execution consent cancelled",
+                    )
+
+                elif msg_type == "confirm_execute":
+                    await send_agent_event(
+                        "execute_confirm_ignored",
+                        backend="vokel",
+                        level="warning",
+                        detail="No executable action is registered yet",
+                        armed=execute_armed,
+                        risk=execute_risk,
+                    )
+                    await send_execute_state("no executable action pending")
 
             # Handle binary audio packets in browser streaming mode
             elif "bytes" in message and session_mode == "browser" and engine:
@@ -662,6 +787,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                             await send_json({"type": "final_transcript", "text": utterance})
                             await send_json({"type": "status", "status": "generating"})
+                            await send_agent_event(
+                                "turn_submitted",
+                                backend=agent_backend_name if "agent_backend_name" in locals() else None,
+                                detail="Transcript sent to active agent",
+                                chars=len(utterance),
+                            )
 
                             await engine.submit_turn(utterance, reset_trace=False)
                             await engine.wait_for_playback()
@@ -696,8 +827,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             local_loop_task.cancel()
         if engine:
             await engine.close()
-        if llm_client:
-            await llm_client.__aexit__(None, None, None)
+        if agent_client:
+            await agent_client.__aexit__(None, None, None)
 
 
 @app.get("/favicon.ico", include_in_schema=False)
