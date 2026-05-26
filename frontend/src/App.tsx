@@ -33,6 +33,8 @@ import type { AgentEvent, ExecuteState } from "./components/AgentConsole";
 import type { ChatSnapshot, WorkspaceTab } from "./components/WorkspaceTabs";
 import { useAudioStreamer } from "./hooks/useAudioStreamer";
 import { playToolEndClick, playToolStartClick } from "./audio/toolCue";
+import { VoiceOrb } from "./components/VoiceOrb";
+import { PersonaSelector } from "./components/PersonaSelector";
 
 type Mode = "local" | "browser";
 type AgentBackend = "builtin" | "hermes";
@@ -95,6 +97,10 @@ function App() {
   const [status, setStatus] = useState<Status>("idle");
   const [messages, setMessages] = useState<Message[]>([]);
   const [metrics, setMetrics] = useState<Record<string, number>>({});
+
+  // Live Voice Presence + Persona Layer (Command #2)
+  const [currentPersona, setCurrentPersona] = useState<string>("cosmic");
+  const [personaPrompt, setPersonaPrompt] = useState<string>("You are a curious cosmic explorer exploring the edges of understanding. Be concise, wonder-filled, and speak naturally for voice.");
   const [error, setError] = useState<string | null>(null);
   const [memoryFacts, setMemoryFacts] = useState<MemoryFact[]>([]);
   const [selectedMemoryIds, setSelectedMemoryIds] = useState<Set<number>>(new Set());
@@ -532,6 +538,9 @@ function App() {
         tool_web: agentBackend === "builtin" && toolWebEnabled,
         tool_image: agentBackend === "builtin" && toolImageEnabled,
         tool_gif: agentBackend === "builtin" && toolGifEnabled,
+        // Persona + Live Voice Presence (Command #2)
+        persona: currentPersona,
+        persona_prompt: personaPrompt,
       })
     );
   };
@@ -597,6 +606,32 @@ function App() {
     if (!socketRef.current || !isConnected) return;
     socketRef.current.send(JSON.stringify({ type, ...payload }));
   };
+
+  // Persona + Live Presence (Command #2)
+  const handlePersonaChange = (id: string, prompt: string) => {
+    setCurrentPersona(id);
+    setPersonaPrompt(prompt);
+
+    // Send to backend so the next session / turn can use the persona system prompt
+    if (socketRef.current && isConnected) {
+      socketRef.current.send(JSON.stringify({
+        type: "set_persona",
+        persona: id,
+        prompt,
+      }));
+    }
+  };
+
+  // Derive reactive orb state from existing pipeline status
+  const getOrbState = (): 'idle' | 'listening' | 'thinking' | 'speaking' => {
+    if (status === "listening") return "listening";
+    if (status === "generating") return "thinking";
+    if (status === "speaking") return "speaking";
+    return "idle";
+  };
+
+  const orbState = getOrbState();
+  const orbAmplitude = status === "listening" ? micVolume : 0;
 
   const handlePauseResume = () => {
     if (!isSessionActive) return;
@@ -1416,7 +1451,22 @@ function App() {
 
         {/* Right column: Spectrums and Transcript (2 columns wide) */}
         <div className="space-y-5 lg:space-y-6 min-w-0">
-          {/* Waveform visualizer */}
+          {/* Live Voice Presence — Command #2 */}
+          <div className="vokel-panel rounded-3xl p-8 flex flex-col items-center">
+            <PersonaSelector current={currentPersona} onChange={handlePersonaChange} />
+
+            <div className="mt-6 mb-2">
+              <VoiceOrb state={orbState} amplitude={orbAmplitude} />
+            </div>
+
+            <div className="text-center mt-2">
+              <div className="text-[10px] font-mono tracking-[4px] text-white/50">PRESENCE</div>
+              <div className="text-xl font-semibold tracking-tight mt-0.5 capitalize">{currentPersona}</div>
+              <div className="text-[11px] text-white/50 mt-0.5">Live voice, reactive to every turn</div>
+            </div>
+          </div>
+
+          {/* Waveform visualizer (detailed audio pipeline) */}
           <WaveformVisualizer status={status} volume={isStreaming ? micVolume : 0} />
 
           {/* Chat transcript stream */}

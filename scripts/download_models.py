@@ -98,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Model assets to download.",
     )
+    parser.add_argument("--minimal", action="store_true", help="Download only the smallest essential models for first-run (Silero VAD + Kokoro TTS).")
     parser.add_argument("--list", action="store_true", help="List available model assets.")
     return parser
 
@@ -110,13 +111,20 @@ def main() -> None:
         return
 
     MODELS_DIR.mkdir(exist_ok=True)
-    model_names = args.models or [
-        "silero-vad",
-        "sense-voice-int8",
-        "streaming-zipformer-en",
-        "kokoro-v1.0",
-        "kokoro-voices",
-    ]
+
+    if args.models:
+        model_names = args.models
+    elif args.minimal:
+        model_names = ["silero-vad", "kokoro-v1.0", "kokoro-voices"]
+    else:
+        model_names = [
+            "silero-vad",
+            "sense-voice-int8",
+            "streaming-zipformer-en",
+            "kokoro-v1.0",
+            "kokoro-voices",
+        ]
+
     for name in model_names:
         if name not in ASSETS:
             print(f"Error: invalid choice: '{name}' (choose from {', '.join(sorted(ASSETS))})")

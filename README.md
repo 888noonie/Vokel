@@ -155,28 +155,32 @@ Project stance:
 - `docs/model-matrix.md` tracks backend candidates before deeper integration.
 - `docs/audio-setup.md` explains the first real microphone benchmark path.
 
-## Setup
+## One-Command Install (Recommended)
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+git clone https://github.com/888noonie/Vokel.git
+cd Vokel
+chmod +x scripts/install.sh
+./scripts/install.sh
 ```
 
-Or using [uv](https://docs.astral.sh/uv/) (recommended):
+Then:
 
 ```bash
-uv venv .venv
-source .venv/bin/activate
-uv pip install -e ".[dev]"
+# Beautiful web dashboard (recommended first run)
+vokel --web
+
+# Or instant CLI voice turn
+vokel "Tell me something interesting about voice interfaces"
 ```
 
-Optional audio dependencies:
+First time? The installer will:
 
-```bash
-sudo apt install -y portaudio19-dev
-pip install -e ".[audio,dev]"
-```
+- Create a clean venv
+- Install everything (including optional audio stack)
+- Download essential models
+- Create `.env` from template
+- Give you a perfect success message with next steps
 
 ## Run Against LM Studio
 
