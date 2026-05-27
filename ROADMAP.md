@@ -172,6 +172,31 @@ Exit check:
 - Vokel can start a Hermes conversation session
 - barge-in closes the active Hermes HTTP stream
 
+## Completed: Onboarding & First-Run Experience (simple_setup)
+
+Status: complete.
+
+Goal: reduce time from fresh `git clone` to a working voice turn (especially `vokel --web`) from "tribal knowledge + 30 minutes of pain" to under two minutes for any developer.
+
+- `scripts/install.sh` — the canonical one-command installer (venv via Python, uv for core + dev, interactive optional full audio stack, `--minimal` models, `.env` bootstrap)
+- `download_models.py --minimal` — fast first-run path that only pulls the essentials (Silero VAD + Kokoro v1 + voices) while the full models remain available via the existing script
+- `scripts/__init__.py` — makes `python -m scripts.download_models` reliable
+- `.env.example` — declared surface of truth with practical keys:
+  - `LM_STUDIO_URL` / `LM_STUDIO_MODEL`
+  - `SERPAPI_API_KEY`, `UNSPLASH_ACCESS_KEY`, `GIPHY_API_KEY`
+  - `MEMORY_ENABLED`, `MEMORY_DB_PATH`
+  - `DEFAULT_VOICE`, `SPEED`
+- README.md Quickstart now leads with the clone + `chmod +x scripts/install.sh` + `./scripts/install.sh` flow, followed by immediate next steps (`vokel --web` or a direct voice prompt)
+- Success banner and guidance updated to match the new simple path while preserving the interactive audio choice
+
+This change directly makes the Phase 0 Desktop Reference Core usable by others without requiring deep repo archaeology. It is a small, measurable DX slice that protects the core product test (live conversation loop) by getting people into it faster.
+
+Exit check:
+- A person who has never seen the repo before can run the one-liner and reach the web dashboard against LM Studio
+- Optional audio path remains opt-in and does not block the text-only happy path
+- `python3 -m pytest -q` remains green
+- No new runtime dependencies introduced
+
 ## Phase 5: Android Companion And Termux Hermes
 
 Status: complete first slice.
