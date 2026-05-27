@@ -13,6 +13,13 @@ Project stance:
 
 > I build it for myself, with respect for others.
 
+## ✅ v0.1 — Hermes Direct WebSocket Transport (DONE)
+
+- [x] `HermesWebSocketClient` (full `AgentBackend` implementation)
+- [x] Termux stub with `start_turn` + delta streaming + `turn_complete`
+- [x] End-to-end smoke test passing with real tokens from Pixel Pro 8
+- Next: Wire into `ConversationEngine` + UI
+
 ## Phase 0: Desktop Reference Core
 
 Status: complete.

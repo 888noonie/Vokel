@@ -18,6 +18,13 @@ Every architectural choice should protect that loop.
 - External agents and cloud services may be used when explicitly selected, but core voice-loop behavior should not depend on them.
 - Vokel owns voice capture, playback, interruption, routing, consent, and audit; external agents own their own tools and memory.
 
+## Hermes Agent (Pixel Pro 8 path)
+
+- Status: **Production-ready transport layer**
+- Backend: `HermesWebSocketClient` (auto-selected on `ws://` URLs)
+- Streaming: Fully validated (15+ tokens in test run against Termux v5 stub)
+- Next milestone: Full UI integration + tool calling
+
 ## Engineering Rules
 
 - Prefer small, measurable slices over large feature drops.
