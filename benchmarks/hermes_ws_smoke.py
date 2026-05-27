@@ -25,17 +25,26 @@ async def run_smoke(host: str) -> None:
         {"role": "user", "content": "What is 17 times 23? Please calculate it step by step."}
     ]
 
-    print("Sending turn...\n")
+    print("Sending turn (will timeout after 15s if stub does not support start_turn)...\n")
 
     try:
         async with client:
             token_count = 0
-            async for event in client.stream_chat(messages):
+            # Protect against hanging when the stub doesn't support the full protocol yet
+            async for event in asyncio.wait_for(
+                client.stream_chat(messages), timeout=15.0
+            ):
                 if hasattr(event, "content"):
                     content = getattr(event, "content", "")
                     print(content, end="", flush=True)
                     token_count += len(content.split()) if content else 0
+
             print(f"\n\n[smoke] Turn complete. Approx tokens: {token_count}")
+
+    except asyncio.TimeoutError:
+        print("\n\n[smoke] TIMEOUT: No response from stub after 15s.")
+        print("This almost always means the stub on the Pixel does not yet handle 'start_turn'.")
+        print("Update the Termux stub with start_turn + delta + turn_complete support, then re-run.")
     except Exception as e:
         print(f"\n[smoke] ERROR: {e}", file=sys.stderr)
         raise
