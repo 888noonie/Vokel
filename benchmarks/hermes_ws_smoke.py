@@ -31,13 +31,12 @@ async def run_smoke(host: str) -> None:
         async with client:
             token_count = 0
             # Protect against hanging when the stub doesn't support the full protocol yet
-            async for event in asyncio.wait_for(
-                client.stream_chat(messages), timeout=15.0
-            ):
-                if hasattr(event, "content"):
-                    content = getattr(event, "content", "")
-                    print(content, end="", flush=True)
-                    token_count += len(content.split()) if content else 0
+            async with asyncio.timeout(15.0):
+                async for event in client.stream_chat(messages):
+                    if hasattr(event, "content"):
+                        content = getattr(event, "content", "")
+                        print(content, end="", flush=True)
+                        token_count += len(content.split()) if content else 0
 
             print(f"\n\n[smoke] Turn complete. Approx tokens: {token_count}")
 
