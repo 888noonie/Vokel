@@ -16,6 +16,14 @@ Interruption works hands-free with a headset (separate mic and speaker). On
 laptop speakers the BARGE IN button in the web dashboard is the reliable path,
 because the mic hears its own TTS output without echo cancellation.
 
+## Current Status (May 27, 2026)
+
+✅ **Hermes WebSocket Bridge — Fully Working**
+- Direct `ws://` connection to Termux stub on Pixel Pro 8
+- Real token-by-token streaming validated
+- `HermesWebSocketClient` implements full `AgentBackend` protocol
+- First end-to-end streaming session completed
+
 ## Why Vokel?
 
 The name comes from three roots: **Vok-** (Latin *vocare* — to call or invoke),
