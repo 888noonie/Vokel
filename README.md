@@ -7,10 +7,11 @@ external agent stacks. It preserves the live loop that makes voice feel useful:
 
 You speak. It answers. You interrupt. It stops. It listens again.
 
-By default, Vokel is designed for local control: local ASR, local TTS, local
-memory, and OpenAI-compatible local model servers. When you deliberately connect
-an external agent such as Hermes, Vokel remains the voice, interruption, consent,
-and audit layer while the agent owns its own reasoning and tools.
+By default, Vokel runs fully local: local ASR, local TTS, local memory, and OpenAI-compatible local model servers.
+
+When you connect an external agent such as Hermes (via `ws://` or the HTTP gateway), Vokel becomes the **platform layer** — it handles voice I/O (ASR/TTS), interruption handling, consent, memory, UI, and audit — while the connected Hermes agent takes the **reasoning seat** and owns its own tools and decision-making.
+
+In Hermes mode you are speaking directly to Hermes. Vokel simply provides the natural voice interface and safety rails around it.
 
 Interruption works hands-free with a headset (separate mic and speaker). On
 laptop speakers the BARGE IN button in the web dashboard is the reliable path,
