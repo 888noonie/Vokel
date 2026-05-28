@@ -355,6 +355,180 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no displayable image or GIF URL was returned", assistant_reply)
         self.assertNotIn("![", assistant_reply)
 
+    async def test_web_search_intent_guard_ignores_planning_feedback(self) -> None:
+        queries: list[str] = []
+
+        async def fake_search_web(query: str) -> str:
+            queries.append(query)
+            return "1. Example result"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_web",
+                description="Search the web.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_web,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("Understood.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry, enabled_tools={"search_web"})
+
+        await engine.start()
+        try:
+            await engine.submit_turn("I'm going to enhance the web search images soon.")
+            await engine.wait_for_playback()
+            await engine.submit_turn("That web search worked well.")
+            await engine.wait_for_playback()
+            await engine.submit_turn("We can improve image search later.")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(queries, [])
+
+    async def test_web_search_intent_guard_allows_current_info_requests(self) -> None:
+        queries: list[str] = []
+
+        async def fake_search_web(query: str) -> str:
+            queries.append(query)
+            return "1. Artemis update"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_web",
+                description="Search the web.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_web,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("Here is the update.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry, enabled_tools={"search_web"})
+
+        await engine.start()
+        try:
+            await engine.submit_turn("What is the latest on Artemis?")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(queries, ["What is the latest on Artemis?"])
+
+    async def test_ambiguous_dot_utterance_is_ignored(self) -> None:
+        queries: list[str] = []
+
+        async def fake_search_web(query: str) -> str:
+            queries.append(query)
+            return "1. Example"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_web",
+                description="Search the web.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_web,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("Should not run")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry, enabled_tools={"search_web"})
+
+        await engine.start()
+        try:
+            await engine.submit_turn(".")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(llm.messages, [])
+        self.assertEqual(queries, [])
+        self.assertNotIn({"role": "user", "content": "."}, engine.history)
+
+    async def test_ambiguous_cjk_filler_utterance_is_ignored(self) -> None:
+        queries: list[str] = []
+
+        async def fake_search_web(query: str) -> str:
+            queries.append(query)
+            return "1. Example"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_web",
+                description="Search the web.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_web,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("Should not run")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(llm=llm, playback=playback, tool_registry=registry, enabled_tools={"search_web"})
+
+        await engine.start()
+        try:
+            await engine.submit_turn("嗯")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(llm.messages, [])
+        self.assertEqual(queries, [])
+        self.assertNotIn({"role": "user", "content": "嗯"}, engine.history)
+
+    async def test_media_followup_allows_another_one_with_prior_context(self) -> None:
+        queries: list[str] = []
+
+        async def fake_search_image(query: str) -> str:
+            queries.append(query)
+            return "![forest](https://example.com/forest.jpg)"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_image",
+                description="Search images.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_image,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("Nice one.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            tool_registry=registry,
+            enabled_tools={"search_image"},
+        )
+        engine.history.append({"role": "assistant", "content": "Here is an image of a mountain lake."})
+
+        await engine.start()
+        try:
+            await engine.submit_turn("another one")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(queries, ["another one"])
+
+    async def test_no_is_not_swallowed_as_filler(self) -> None:
+        llm: Any = FakeLlm([TextDeltaEvent("Okay, noted.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(llm=llm, playback=playback)
+
+        await engine.start()
+        try:
+            await engine.submit_turn("no")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(len(llm.messages), 1)
+        self.assertIn({"role": "user", "content": "no"}, engine.history)
+
 
 if __name__ == "__main__":
     unittest.main()

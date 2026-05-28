@@ -23,6 +23,7 @@ from .turns import AsrEngine, TurnProducer
 
 AgentMode = Literal["builtin", "hermes"]
 MEDIA_MARKDOWN_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)]+)\)")
+_PUNCT_ONLY_RE = re.compile(r"^[\s\.\,\!\?\:\;\-\_~…·。！？、]+$")
 
 
 class ConversationEngine:
@@ -88,6 +89,11 @@ class ConversationEngine:
         self.trace.mark("conversation_reset")
 
     async def submit_turn(self, user_text: str, reset_trace: bool = True) -> None:
+        if self._is_ambiguous_filler_utterance(user_text):
+            if reset_trace:
+                self.trace.reset()
+            self.trace.mark("utterance_ignored", reason="ambiguous_filler", text=user_text)
+            return
         await self.interrupt()
         if reset_trace:
             self.trace.reset()
@@ -360,6 +366,36 @@ class ConversationEngine:
             return None
         return match.group(0)
 
+    @staticmethod
+    def _is_ambiguous_filler_utterance(user_text: str) -> bool:
+        text = (user_text or "").strip()
+        if not text:
+            return True
+        if _PUNCT_ONLY_RE.fullmatch(text):
+            return True
+
+        normalized = " ".join(text.lower().split())
+        filler_tokens = {
+            "um",
+            "uh",
+            "hmm",
+            "mmm",
+            "mm",
+            "umm",
+            "uhh",
+            "erm",
+            "huh",
+            "eh",
+            "嗯",
+            "嗯嗯",
+            "呃",
+            "啊",
+        }
+        tokens = normalized.split()
+        if tokens and all(token in filler_tokens for token in tokens):
+            return True
+        return False
+
     def _recent_history_mentions_gif(self) -> bool:
         """Check if the last few conversation turns were about GIFs."""
         gif_words = ("gif", "giphy", "reaction gif", "meme", "sticker")
@@ -600,21 +636,7 @@ class ConversationEngine:
         if not self.tool_registry or not self.tool_registry.get_tool("search_web"):
             return ""
 
-        normalized = user_text.lower()
-        requires_search = any(
-            keyword in normalized
-            for keyword in (
-                "search",
-                "web",
-                "news",
-                "today",
-                "latest",
-                "current",
-                "breaking",
-                "real-time",
-            )
-        )
-        if not requires_search:
+        if not self._should_force_web_search(user_text):
             return ""
 
         self.trace.mark("tool_call_forced", tool_name="search_web")
@@ -650,6 +672,73 @@ class ConversationEngine:
         )
         self.trace.mark("tool_call_finished", tool_name="search_web", chars=len(result))
         return result
+
+    @staticmethod
+    def _should_force_web_search(user_text: str) -> bool:
+        normalized = " ".join(user_text.lower().split())
+        if not normalized:
+            return False
+
+        explicit_lookup_phrases = (
+            "search the web for",
+            "search web for",
+            "search for",
+            "look up",
+            "find me information about",
+            "find information about",
+            "find me info about",
+            "look up current",
+            "search latest",
+            "latest on",
+        )
+        if any(phrase in normalized for phrase in explicit_lookup_phrases):
+            return True
+
+        meta_or_planning_phrases = (
+            "i'm going to",
+            "i am going to",
+            "we can",
+            "we should",
+            "worked well",
+            "work well",
+            "improve",
+            "later",
+            "soon",
+            "set up the api",
+            "setup the api",
+            "enhance",
+            "future plan",
+            "next step",
+        )
+        if any(phrase in normalized for phrase in meta_or_planning_phrases):
+            return False
+
+        is_question = (
+            "?" in user_text
+            or normalized.startswith(("what", "who", "when", "where", "why", "how"))
+        )
+        current_info_cues = (
+            "latest",
+            "current",
+            "today",
+            "news",
+            "weather",
+            "breaking",
+            "real-time",
+            "recent",
+            "headline",
+            "headlines",
+        )
+        has_current_info_cue = any(cue in normalized for cue in current_info_cues)
+        if is_question and has_current_info_cue:
+            return True
+
+        words = normalized.split()
+        if len(words) <= 10 and has_current_info_cue and not normalized.startswith(
+            ("i ", "we ", "that ", "this ", "it ")
+        ):
+            return True
+        return False
 
     def _messages_for_web_synthesis(
         self,
