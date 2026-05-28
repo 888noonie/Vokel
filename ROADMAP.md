@@ -7,11 +7,41 @@ You speak. It answers. You interrupt. It stops. It listens again.
 
 Vokel is local-first by default, but it can also act as a voice front-end for
 external agent stacks. The boundary is simple: models and agents may reason,
-but Vokel owns capture, playback, interruption, consent, routing, and audit.
+but Vokel owns capture, playback, interruption, consent, routing, display, and
+audit.
 
 Project stance:
 
 > I build it for myself, with respect for others.
+
+## Product Direction Lock
+
+Vokel is not an assistant identity. Vokel is the clean voice and display layer
+between a person and the intelligence systems they already run.
+
+User-facing language should prefer **Connections**, not profiles. LM Studio and
+Hermes already own their own model, agent, memory, tool, provider, and profile
+configuration. Vokel should not duplicate those systems.
+
+A Vokel connection is a remembered route to something the user wants to speak
+to:
+
+- LM Studio for local OpenAI-compatible model use.
+- Hermes for an external agent stack, including the Android/Termux path.
+
+The user should always be able to see:
+
+- what they are connected to
+- whether the route is local or external
+- who owns the tools
+- what context has been shared
+- whether interruption is available
+- whether execution consent is armed
+
+Everything powerful should be visible. Everything visible should be
+collapsible. Everything external should be explicit.
+
+See `docs/foundation-direction.md` for the current grounding note.
 
 ## ✅ v0.1 — Hermes Direct WebSocket Transport (DONE)
 
@@ -204,9 +234,45 @@ Exit check:
 - `python3 -m pytest -q` remains green
 - No new runtime dependencies introduced
 
-## Phase 5: Android Companion And Termux Hermes
+## Phase 5: Connections And Transparent Routing
 
-Status: complete first slice.
+Status: next build slice.
+
+Goal: replace muddy backend/mode language with a clean connection layer that lets
+the user speak to LM Studio or Hermes without Vokel pretending to be the agent.
+
+First slice:
+
+- User-facing label: **Connections**, not profiles.
+- First-class connection type: **LM Studio**.
+- First-class connection type: **Hermes**.
+- Saved connection settings: name, type, endpoint/gateway URL, optional API key,
+  local voice/speed preference if needed.
+- Active connection badge in the dashboard and transcript.
+- Local/external route badge.
+- Tool ownership badge:
+  - LM Studio/Built-in route: Vokel tools may be active.
+  - Hermes route: Hermes owns tools; Vokel does not duplicate them.
+- Privacy state badge: local, external agent, or blocked by local-only mode.
+
+Boundary:
+
+- Vokel connects the user's voice to the selected backend.
+- Vokel does not manage LM Studio personas or Hermes agent identity.
+- Connection switching must be visible and reversible.
+- The user must never silently move from local to external routing.
+
+Exit check:
+
+- user can choose LM Studio or Hermes from a simple connection selector
+- active connection is visible during every turn
+- transcript/export records which connection received the turn
+- Hermes tools remain backend-owned
+- local-only mode can block external routing
+
+## Phase 6: Android Companion And Termux Hermes
+
+Status: next product proof after connection layer.
 
 Goal: bring the proven voice/control surface to Android, with a first target of
 talking to a Hermes agent running in Termux on the same phone.
@@ -216,16 +282,19 @@ Why this moves forward:
 - The desktop voice loop is measurable.
 - Hermes mode proves external agent routing.
 - Android is the natural always-near interface for voice-first use.
+- The user should be able to talk to phone-based Hermes without needing a cloud
+  voice assistant.
 
 First Android slice:
 
-- Android Foreground Service for microphone/listening lifecycle
-- Persistent notification and permission flow
-- Browser/PWA dashboard hardening for phone screens
-- Local network or loopback routing to Hermes in Termux
-- Configurable Hermes gateway URL, defaulting to local device routes
-- Touchless interrupt and resume
-- Audio focus, ducking, and notification-safe earcons
+- Android-friendly web/PWA dashboard layout
+- configurable Hermes gateway URL
+- documented Termux Hermes API Server setup
+- `/health` check from Vokel to Hermes
+- visible active connection and privacy state
+- voice handoff to Hermes mode
+- touchless interrupt and resume where the Android audio path permits it
+- audio focus, ducking, and notification-safe earcons
 
 Termux Hermes path:
 
@@ -233,7 +302,7 @@ Termux Hermes path:
 - Verify `API_SERVER_ENABLED=true` and `/health`
 - Support Vokel-to-Hermes handoff over `127.0.0.1`, LAN, or Android-supported
   loopback strategy
-- Keep Hermes tools agent-owned and visible in Vokel's Agent Console
+- Keep Hermes tools agent-owned and visible in Vokel's connection state
 
 Later Android slices:
 
@@ -242,22 +311,28 @@ Later Android slices:
 - Local model runner selected by measured device performance
 - Airplane-mode local demo
 - Screen-off or pocket-safe foreground service behavior
+- Cross-device routing between the user's desktop and phone where safe
 
 Exit check:
 
 - Android can talk to Hermes running in Termux
-- active backend and privacy state are visible
+- active connection and privacy state are visible
 - interruption remains higher priority than fast output
 
-## Phase 6: Wake Word And Consent Boundary
+## Phase 7: Wake Word, Pause, Resume, And Consent Boundary
 
 Status: planned.
 
-Goal: make voice routing and execution consent natural without weakening safety.
+Goal: make voice routing, live context control, and execution consent natural
+without weakening safety.
 
 Voice phrases:
 
 - `Hey Vokel` wakes the listen loop
+- `pause`, `hold on`, or `wait` pauses the active stream
+- `continue` resumes when safe
+- `switch to Hermes` changes connection only after showing the route change
+- `switch back to local` returns to local routing
 - `Vokel Execute` arms execution mode
 - high-risk actions require a 3-second hold or equivalent explicit confirmation
 
@@ -274,22 +349,40 @@ Boundary:
 
 - Agents may request actions.
 - Vokel grants or denies actions.
+- Pause/hold commands stop the stream; they do not grant action permission.
+- Live context injection must show what context is being added and where it will
+  be routed.
 - The user must be able to see what is about to happen before execution.
 
 Exit check:
 
+- `pause` / `hold on` stops the active stream cleanly
+- `continue` resumes with clear state
 - `Vokel Execute` changes state but does not execute by itself
 - high-risk actions cannot run without explicit confirmation
 - consent state is visible in the dashboard and Agent Console
 
-## Phase 7: Media Inputs And Privacy Routing
+## Phase 8: Media Cards, Media Inputs, And Privacy Routing
 
 Status: planned.
 
-Goal: add images, screenshots, file uploads, and eventually camera input without
-blurring local/cloud boundaries.
+Goal: make Media Cards the single visual grammar for useful things entering or
+leaving a conversation, then add images, screenshots, file uploads, and later OCR
+without blurring local/cloud boundaries.
 
-First media slice:
+Media Card first slice:
+
+- One internal `MediaCard` shape for web, image, GIF, tool, context, and consent
+  cards.
+- Type/kind badge: web, image, GIF, file, screenshot, OCR, voice, device, tool,
+  context, consent.
+- Route badge: local, LM Studio, Hermes, external.
+- Privacy badge: local-only, external allowed, external sent.
+- Actions: expand, save, hide, tag, copy, delete, use as context.
+- `speechText` field or equivalent so TTS never reads raw URLs, metadata, or
+  unsafe card internals.
+
+First media input slice:
 
 - Image and screenshot upload
 - File upload read-only summarization
@@ -300,12 +393,16 @@ First media slice:
 Privacy controls:
 
 - `Local Only` mode blocks cloud agent handoff and cloud media routing
-- visible header state: local-only, cloud enabled, active agent
+- visible header state: local-only, cloud enabled, active connection
 - confirmation before sending private media or file contents to an external agent
 - transcript/audit note records which backend received the media
 
 Deferred:
 
+- shareable Media Cards
+- card import/export format
+- cross-device card sending
+- OCR and embedding model integration
 - camera input
 - screen context
 - file write-back
@@ -315,9 +412,10 @@ Exit check:
 
 - uploaded media never leaves local mode without confirmation
 - cloud routing is visible before and after the action
+- cards can be expanded, saved, hidden, tagged, and used as context where safe
 - TTS does not read file paths, URLs, or metadata aloud unless requested
 
-## Phase 8: Better Barge-In And Visual Feedback
+## Phase 9: Better Barge-In And Visual Feedback
 
 Status: planned.
 
@@ -337,7 +435,7 @@ Visualizer:
 - Use real analyser data when available
 - Use procedural fallback when no audio source is available
 - Map states to idle, listening, generating, speaking, paused, agent-active,
-  and execute-armed
+  execute-armed, and connection-switching
 
 Exit check:
 
@@ -345,7 +443,7 @@ Exit check:
 - visual state matches the live loop
 - visualizer does not become a heavy console or text duplicate
 
-## Phase 9: Observability And Long-Term Recall
+## Phase 10: Observability And Long-Term Recall
 
 Status: planned.
 
@@ -361,7 +459,7 @@ Memory v2:
 
 - opt-in local vector store candidate: Chroma, LanceDB, or SQLite vector extension
 - visible recall snippets
-- per-agent conversation summaries
+- per-connection conversation summaries
 - project/repository threads
 - "what changed since last time?" digests
 - user-approved durable facts
@@ -379,7 +477,7 @@ Exit check:
 - recalled snippets are visible
 - latency impact is measured before enabling by default
 
-## Phase 10: Model And Agent Routing
+## Phase 11: Additional Backends And Cross-Device Routing
 
 Status: planned.
 
@@ -388,7 +486,6 @@ interface.
 
 Local backends:
 
-- LM Studio presets
 - Ollama presets
 - llama.cpp server presets
 - custom OpenAI-compatible endpoint
@@ -400,16 +497,23 @@ External agents:
 - future agent stack adapters behind `AgentBackend`
 - route switching by voice: "connect me to Hermes", "switch back to local"
 
+Cross-device direction:
+
+- phone can speak to desktop LM Studio where safe
+- desktop can speak to phone Termux Hermes where safe
+- device/route visibility must stay explicit
+- media/context sharing between devices must remain opt-in and auditable
+
 Public-facing behavior:
 
-- show active backend clearly
-- explain when a cloud-backed agent is active
+- show active connection clearly
+- explain when an external/cloud-backed agent is active
 - never silently move a conversation from local to external
 
 Exit check:
 
 - user can switch backend without restarting Vokel
-- active backend is visible in transcript/export
+- active connection is visible in transcript/export
 - privacy mode can prevent external routing
 
 ## Open Decisions
@@ -419,6 +523,8 @@ Exit check:
 - Termux-Hermes connection strategy on Android loopback and foreground service boundaries.
 - Echo cancellation strategy for laptop speakers and phone speaker/mic paths.
 - First media payload contract for Hermes API Server mode.
+- First stable Media Card schema and persistence format.
+- Whether card sharing is a local export format first or a network/share feature later.
 - Vector memory backend and deletion semantics.
 - Whether `Local Only` should be a global lock or per-session mode.
 
@@ -428,7 +534,10 @@ Exit check:
 - Inference client naming: **LocalInferenceClient**.
 - Tool-call audio cue: **two-tone sine**.
 - Visual media pipeline: **caption-only TTS**.
+- User-facing backend language: **Connections**, not profiles.
+- First-class v1 connections: **LM Studio** and **Hermes**.
 - Hermes mode: **agent-owned tools, Vokel-owned voice and consent**.
+- Media Cards: **display and trust primitive first; sharing later**.
 - Execute phrase: **`Vokel Execute` arms consent; it does not execute alone**.
 - Wake phrase: **`Hey Vokel` opens the listen loop**.
 - Privacy posture: **local-first by default; external agents are explicit**.
