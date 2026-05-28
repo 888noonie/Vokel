@@ -845,10 +845,25 @@ function App() {
         <div className="space-y-5 lg:space-y-6">
           {/* Active Session Status Card */}
           <div className="vokel-panel rounded-3xl p-5 sm:p-6">
-            <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
-              <Cpu className="w-4 h-4 text-purple-400" />
-              <span>Session Control</span>
-            </h2>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase flex items-center space-x-2">
+                <Cpu className="w-4 h-4 text-purple-400" />
+                <span>Session Control</span>
+              </h2>
+              <span
+                className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                  isPaused
+                    ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                    : status === "listening"
+                      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
+                      : status === "generating" || status === "speaking"
+                        ? "border-blue-500/25 bg-blue-500/10 text-blue-300"
+                        : "border-zinc-800 bg-zinc-950 text-zinc-500"
+                }`}
+              >
+                {isPaused ? "Paused" : status}
+              </span>
+            </div>
 
             <div className="space-y-4">
               <div className="flex rounded-xl bg-zinc-950 p-1 border border-zinc-900">

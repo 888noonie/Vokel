@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Literal
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -47,6 +48,40 @@ logger = logging.getLogger("vokel.web")
 
 _FRONTEND_DIST = Path("frontend/dist")
 _FAVICON_PATH = _FRONTEND_DIST / "favicon.svg"
+
+
+VoiceSessionCommand = Literal["pause", "resume"]
+_VOICE_FILLER_PREFIX_RE = re.compile(r"^(?:ok(?:ay)?|please|just|now)\s+")
+_VOICE_SPACE_RE = re.compile(r"\s+")
+
+
+def detect_voice_session_command(text: str) -> VoiceSessionCommand | None:
+    """Recognize lightweight voice control commands for session state only."""
+    normalized = _VOICE_SPACE_RE.sub(" ", re.sub(r"[^a-z0-9\s]", " ", text.lower())).strip()
+    if not normalized:
+        return None
+    while True:
+        stripped = _VOICE_FILLER_PREFIX_RE.sub("", normalized)
+        if stripped == normalized:
+            break
+        normalized = stripped.strip()
+    words = normalized.split()
+    if not words or len(words) > 8:
+        return None
+
+    if normalized in {
+        "pause",
+        "hold on",
+        "wait",
+        "hang on",
+        "hang on for now",
+        "hold on for now",
+        "pause for now",
+    }:
+        return "pause"
+    if normalized in {"continue", "resume", "continue now", "resume now"}:
+        return "resume"
+    return None
 
 
 class _QuietStaticAccessLogFilter(logging.Filter):
@@ -166,6 +201,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     execute_armed = False
     execute_risk = "none"
     current_agent_backend = "vokel"
+    local_run_loop: Callable[[], Coroutine[Any, Any, None]] | None = None
+    browser_asr: Any | None = None
+    browser_asr_stream: Any | None = None
+    browser_all_samples: list[float] = []
+    browser_last_text = ""
+    browser_last_changed_time = asyncio.get_running_loop().time()
+    browser_stable_fired = False
 
     async def run_auto_followup() -> None:
         if engine is None or session_paused:
@@ -257,6 +299,47 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "risk": execute_risk,
             "detail": detail,
         })
+
+    async def pause_active_session(source: str) -> None:
+        nonlocal session_paused, local_loop_task
+        if not engine:
+            return
+        await send_agent_event(
+            "session_paused",
+            detail="Session paused",
+            backend="vokel",
+            source=source,
+        )
+        session_paused = True
+        cancel_auto_followup()
+        await engine.interrupt()
+        if session_mode == "local" and local_loop_task and not local_loop_task.done():
+            local_loop_task.cancel()
+        await send_json({"type": "status", "status": "paused"})
+
+    async def resume_active_session(source: str) -> None:
+        nonlocal session_paused, local_loop_task, browser_asr_stream, browser_last_text, browser_stable_fired
+        if not engine:
+            return
+        await send_agent_event(
+            "session_resumed",
+            detail="Session resumed",
+            backend="vokel",
+            source=source,
+        )
+        session_paused = False
+        if session_mode == "browser":
+            browser_asr_stream = browser_asr.create_stream()
+            browser_last_text = ""
+            browser_all_samples.clear()
+            browser_stable_fired = False
+            engine.trace.mark("capture_started")
+        elif session_mode == "local":
+            if local_loop_task is None or local_loop_task.done():
+                local_loop_task = asyncio.create_task(local_run_loop())
+        await send_json({"type": "status", "status": "listening"})
+        if auto_followup_scheduler:
+            auto_followup_scheduler.arm_listening()
 
     try:
         await send_agent_event("socket_connected", detail="WebSocket accepted", backend="vokel")
@@ -605,30 +688,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                 elif msg_type == "pause_session":
                     if engine:
-                        await send_agent_event("session_paused", detail="Session paused", backend="vokel")
-                        session_paused = True
-                        cancel_auto_followup()
-                        await engine.interrupt()
-                        if session_mode == "local" and local_loop_task and not local_loop_task.done():
-                            local_loop_task.cancel()
-                        await send_json({"type": "status", "status": "paused"})
+                        await pause_active_session("ui_control")
 
                 elif msg_type == "resume_session":
                     if engine:
-                        await send_agent_event("session_resumed", detail="Session resumed", backend="vokel")
-                        session_paused = False
-                        if session_mode == "browser":
-                            browser_asr_stream = browser_asr.create_stream()
-                            browser_last_text = ""
-                            browser_all_samples.clear()
-                            browser_stable_fired = False
-                            engine.trace.mark("capture_started")
-                        elif session_mode == "local":
-                            if local_loop_task is None or local_loop_task.done():
-                                local_loop_task = asyncio.create_task(local_run_loop())
-                        await send_json({"type": "status", "status": "listening"})
-                        if auto_followup_scheduler:
-                            auto_followup_scheduler.arm_listening()
+                        await resume_active_session("ui_control")
 
                 elif msg_type == "reset_session":
                     if engine:
@@ -727,8 +791,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             # Handle binary audio packets in browser streaming mode
             elif "bytes" in message and session_mode == "browser" and engine:
-                if session_paused:
-                    continue
                 audio_data = message["bytes"]
                 # Convert raw bytes (Float32 PCM) to a numpy float32 array
                 samples = np.frombuffer(audio_data, dtype=np.float32)
@@ -754,7 +816,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                 current_time = asyncio.get_running_loop().time()
 
-                if frame_rms >= speech_threshold and auto_followup_scheduler:
+                if frame_rms >= speech_threshold and auto_followup_scheduler and not session_paused:
                     auto_followup_scheduler.on_user_activity()
 
                 if text != browser_last_text:
@@ -775,63 +837,87 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     browser_last_text = text
                     browser_last_changed_time = current_time
                     browser_stable_fired = False
-                    engine.trace.mark("partial_transcript", text=text)
-                    await send_json({"type": "partial_transcript", "text": text})
+                    if not session_paused:
+                        engine.trace.mark("partial_transcript", text=text)
+                        await send_json({"type": "partial_transcript", "text": text})
 
                 elif text and not browser_stable_fired:
                     if current_time - browser_last_changed_time >= 0.6:
-                        engine.trace.mark("stable_transcript", text=text)
+                        if not session_paused:
+                            engine.trace.mark("stable_transcript", text=text)
                         browser_stable_fired = True
-                        await send_json({"type": "stable_transcript", "text": text})
+                        if not session_paused:
+                            await send_json({"type": "stable_transcript", "text": text})
 
                 browser_all_samples.extend(samples.tolist())
 
                 if browser_asr_stream.is_endpoint():
-                    if browser_last_text and not browser_stable_fired:
+                    if browser_last_text and not browser_stable_fired and not session_paused:
                         engine.trace.mark("stable_transcript", text=browser_last_text)
 
                     utterance = browser_last_text.strip()
                     # Ignore empty or noise-only endpoints so we do not spam the LLM.
                     if len(utterance) >= 2:
                         async with turn_lock:
-                            if auto_followup_scheduler:
-                                auto_followup_scheduler.on_user_activity()
-                            engine.trace.mark(
-                                "capture_finished",
-                                has_audio=True,
-                                audio_seconds=float(len(browser_all_samples)) / 16000.0,
-                                samples=len(browser_all_samples),
-                            )
-                            engine.trace.mark(
-                                "asr_finished", chars=len(utterance), text=utterance
-                            )
-
                             await send_json({"type": "final_transcript", "text": utterance})
-                            await send_json({"type": "status", "status": "generating"})
-                            await send_agent_event(
-                                "turn_submitted",
-                                backend=agent_backend_name if "agent_backend_name" in locals() else None,
-                                detail="Transcript sent to active agent",
-                                chars=len(utterance),
-                            )
+                            voice_command = detect_voice_session_command(utterance)
+                            if voice_command == "pause":
+                                if not session_paused:
+                                    await pause_active_session("voice_command")
+                                else:
+                                    await send_json({"type": "status", "status": "paused"})
+                            elif voice_command == "resume":
+                                if session_paused:
+                                    await resume_active_session("voice_command")
+                                else:
+                                    await send_json({"type": "status", "status": "listening"})
+                            elif not session_paused:
+                                if auto_followup_scheduler:
+                                    auto_followup_scheduler.on_user_activity()
+                                engine.trace.mark(
+                                    "capture_finished",
+                                    has_audio=True,
+                                    audio_seconds=float(len(browser_all_samples)) / 16000.0,
+                                    samples=len(browser_all_samples),
+                                )
+                                engine.trace.mark(
+                                    "asr_finished", chars=len(utterance), text=utterance
+                                )
+                                await send_json({"type": "status", "status": "generating"})
+                                await send_agent_event(
+                                    "turn_submitted",
+                                    backend=agent_backend_name if "agent_backend_name" in locals() else None,
+                                    detail="Transcript sent to active agent",
+                                    chars=len(utterance),
+                                )
 
-                            await engine.submit_turn(utterance, reset_trace=False)
-                            await engine.wait_for_playback()
+                                await engine.submit_turn(utterance, reset_trace=False)
+                                await engine.wait_for_playback()
 
-                            await send_json({
-                                "type": "summary",
-                                "metrics": engine.trace.summary_ms(),
-                            })
+                                await send_json({
+                                    "type": "summary",
+                                    "metrics": engine.trace.summary_ms(),
+                                })
+                            else:
+                                await send_agent_event(
+                                    "paused_input_ignored",
+                                    backend="vokel",
+                                    detail="Input ignored while paused. Say 'continue' or 'resume' to continue.",
+                                    level="info",
+                                )
 
                     # Reset recognizer after every endpoint (including ignored silence).
                     browser_asr_stream = browser_asr.create_stream()
                     browser_last_text = ""
                     browser_all_samples.clear()
                     browser_stable_fired = False
-                    await send_json({"type": "status", "status": "listening"})
-                    engine.trace.mark("capture_started")
-                    if auto_followup_scheduler:
-                        auto_followup_scheduler.arm_listening()
+                    if session_paused:
+                        await send_json({"type": "status", "status": "paused"})
+                    else:
+                        await send_json({"type": "status", "status": "listening"})
+                        engine.trace.mark("capture_started")
+                        if auto_followup_scheduler:
+                            auto_followup_scheduler.arm_listening()
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
