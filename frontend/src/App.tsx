@@ -747,6 +747,24 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
+  const activeConnectionLabel = agentBackend === "hermes" ? "Hermes" : "LM Studio";
+  const routeLabel = agentBackend === "hermes" ? "External agent" : "Local model";
+  const toolsOwnerLabel = agentBackend === "hermes" ? "Hermes-owned" : "Vokel-owned";
+  const privacyLabel = agentBackend === "hermes" ? "External agent active" : "Local";
+  const voiceLabel =
+    playbackBackend === "kokoro"
+      ? `Local Kokoro (${voice})`
+      : playbackBackend === "spd-say"
+        ? "Local Speech Dispatcher"
+        : "Local Console";
+  const interruptLabel = isConnected && isSessionActive ? "Available" : "Not available";
+  const consentLabel = executeState.armed
+    ? "Armed"
+    : executeState.risk !== "none"
+      ? "Required"
+      : "Not armed";
+  const trustSummary = `${activeConnectionLabel} • ${routeLabel} • ${interruptLabel}`;
+
   return (
     <div className="app-shell min-h-screen text-zinc-100 flex flex-col font-sans selection:bg-purple-500/30 selection:text-purple-200">
       {/* Header */}
@@ -1451,6 +1469,38 @@ function App() {
 
         {/* Right column: Spectrums and Transcript (2 columns wide) */}
         <div className="space-y-5 lg:space-y-6 min-w-0">
+          {/* Trust State Surface (Slice B) */}
+          <details className="vokel-panel rounded-3xl p-5 sm:p-6" open>
+            <summary className="cursor-pointer list-none">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">
+                    Trust State
+                  </div>
+                  <div className="mt-1 text-xs font-mono text-zinc-300">{trustSummary}</div>
+                </div>
+                <span className="text-[10px] font-mono uppercase text-zinc-500">Details</span>
+              </div>
+            </summary>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              {[
+                { label: "Active Connection", value: activeConnectionLabel },
+                { label: "Route", value: routeLabel },
+                { label: "Voice", value: voiceLabel },
+                { label: "Tools", value: toolsOwnerLabel },
+                { label: "Privacy", value: privacyLabel },
+                { label: "Interrupt", value: interruptLabel },
+                { label: "Consent", value: consentLabel },
+              ].map((item) => (
+                <div key={item.label} className="vokel-panel-subtle rounded-2xl px-3 py-2">
+                  <div className="text-[10px] font-mono uppercase text-zinc-500">{item.label}</div>
+                  <div className="mt-1 text-xs font-mono text-zinc-300">{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </details>
+
           {/* Live Voice Presence — Command #2 */}
           <div className="vokel-panel rounded-3xl p-8 flex flex-col items-center">
             <PersonaSelector current={currentPersona} onChange={handlePersonaChange} />
