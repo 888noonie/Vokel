@@ -36,6 +36,19 @@ clear.
 
 ## Work Slices
 
+## Completed Foundation Slices
+
+- Slice A complete: Connections language is user-facing across dashboard/session surfaces.
+- Slice B complete: compact + expandable Trust State surface is live.
+- Slice C complete: MediaCard V1 transcript primitive is in place for `web` / `image` / `gif` / `tool`.
+- Media hardening complete:
+  - prevent media hijack
+  - remove duplicate markdown + card rendering paths
+  - transparent fallback when forced media returns no displayable URL
+  - resilient search/image/GIF failure handling (retry + classified user-facing fallbacks)
+- Slice D complete: pause/resume/hold controls are wired and visible.
+- Ambiguous filler utterance guard complete: tiny/noisy filler inputs are ignored (no tool/LLM churn).
+
 ### Slice A: Connection Model And Naming Lock
 
 Outcome:
@@ -181,6 +194,16 @@ Manual checks (must pass):
 4. Resume and complete another turn.
 5. Trigger tool/media output and verify Media Card route/privacy labels.
 6. Confirm spoken output never reads raw markdown/URLs.
+
+Current verification snapshot:
+
+- `.venv/bin/python -m pytest -q`
+- `82 passed`
+
+Current known limitation:
+
+- Spoken pause/resume interception is implemented for browser-audio websocket mode.
+- Local hardware mode still relies on existing controls and does not yet intercept spoken commands in `run_turns`.
 
 ## Suggested Delivery Order
 
