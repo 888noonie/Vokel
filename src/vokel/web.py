@@ -292,7 +292,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await send_agent_event(
                         "backend_selected",
                         backend=agent_backend_name,
-                        detail=f"{agent_backend_name} mode requested",
+                        detail=f"{agent_backend_name} connection requested",
                     )
                     hermes_mode = agent_backend_name == "hermes"
                     agent_mode: AgentMode = "hermes" if hermes_mode else "builtin"
@@ -536,7 +536,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     else:
                         await send_json({
                             "type": "error",
-                            "message": f"Unsupported mode: {session_mode}",
+                            "message": f"Unsupported audio route: {session_mode}",
                         })
 
                 elif msg_type == "preview_voice":

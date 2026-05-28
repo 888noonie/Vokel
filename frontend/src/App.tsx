@@ -793,13 +793,13 @@ function App() {
         </div>
       </header>
 
-      {/* Mobile Privacy & Backend Banner */}
+      {/* Mobile Privacy & Connection Banner */}
       <div className="bg-zinc-900 border-b border-zinc-800 xl:hidden">
         <div className="safe-container py-2 flex items-center justify-between text-[10px] font-mono tracking-wider text-zinc-400">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
               <Cpu className="w-3 h-3 text-purple-400" />
-              {agentBackend === "hermes" ? "HERMES" : "BUILT-IN"}
+              {agentBackend === "hermes" ? "HERMES" : "LM STUDIO"}
             </span>
             <span className="flex items-center gap-1">
               <Wrench className="w-3 h-3 text-indigo-400" />
@@ -980,15 +980,15 @@ function App() {
             </div>
           </div>
 
-          {/* Agent Extension */}
+          {/* Connection */}
           <div className="vokel-panel rounded-3xl p-5 sm:p-6">
             <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
               <Bot className="w-4 h-4 text-purple-400" />
-              <span>Agent Extension</span>
+              <span>Connection</span>
             </h2>
 
             <p className="text-[11px] leading-relaxed text-zinc-500 mb-4">
-              Built-in uses LM Studio directly. Hermes mode makes Vokel the voice front-end while Hermes owns
+              LM Studio connection uses your local LM Studio endpoint directly. Hermes connection keeps Vokel as the voice front-end while Hermes owns
               reasoning, memory, and tools.
             </p>
 
@@ -1002,7 +1002,7 @@ function App() {
                     : "text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
                 }`}
               >
-                BUILT-IN
+                LM STUDIO
               </button>
               <button
                 disabled={isSessionActive}
@@ -1103,7 +1103,7 @@ function App() {
 
             <p className="text-[11px] leading-relaxed text-zinc-500 mb-4">
               {agentBackend === "hermes"
-                ? "Disabled in Hermes mode — Hermes gateway tools and MCP servers handle capabilities."
+                ? "Disabled in Hermes connection — Hermes gateway tools and MCP servers handle capabilities."
                 : "Enable tools the model can use during conversation. All off by default to keep responses fast and local."}
             </p>
 
