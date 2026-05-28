@@ -1,5 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import { User, Radio, Volume2 } from "lucide-react";
+import { TranscriptMediaCard } from "./TranscriptMediaCard";
+import type { MediaCard } from "./mediaCardTypes";
 
 export interface Message {
   id: string;
@@ -11,10 +13,78 @@ export interface Message {
 interface TranscriptStreamProps {
   messages: Message[];
   status: "idle" | "listening" | "generating" | "speaking" | "paused";
+  activeConnection: "lm_studio" | "hermes";
+  activeRoute: "local" | "external";
+  activePrivacy?: "local" | "external_active" | "unknown";
 }
 
 const urlPattern = /(https?:\/\/[^\s)]+)/g;
 const imagePattern = /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g;
+const toolPattern = /\[tool_call:([^\]]+)\]/g;
+
+function inferMediaCards(
+  text: string,
+  activeConnection: "lm_studio" | "hermes",
+  activeRoute: "local" | "external",
+  activePrivacy: "local" | "external_active" | "unknown"
+): MediaCard[] {
+  const cards: MediaCard[] = [];
+  let index = 0;
+
+  const imageMatches = [...text.matchAll(imagePattern)];
+  for (const m of imageMatches) {
+    const rawAlt = m[1] ?? "";
+    const src = m[2] ?? "";
+    const isGif = rawAlt.startsWith("gif:");
+    const alt = isGif ? rawAlt.slice(4) : rawAlt;
+    cards.push({
+      id: `img-${index++}`,
+      kind: isGif ? "gif" : "image",
+      title: alt || undefined,
+      imageUrl: src,
+      sourceUrl: src,
+      connection: activeConnection,
+      route: activeRoute,
+      privacy: activePrivacy,
+    });
+  }
+
+  const strippedImages = text.replace(imagePattern, " ");
+  const toolMatches = [...strippedImages.matchAll(toolPattern)];
+  for (const m of toolMatches) {
+    const toolName = (m[1] ?? "").trim();
+    cards.push({
+      id: `tool-${index++}`,
+      kind: "tool",
+      title: toolName ? `Tool call: ${toolName}` : "Tool call",
+      toolName: toolName || undefined,
+      connection: activeConnection,
+      route: activeRoute,
+      privacy: activePrivacy,
+    });
+  }
+
+  const strippedForUrls = strippedImages.replace(toolPattern, " ");
+  const seen = new Set<string>();
+  const urlMatches = [...strippedForUrls.matchAll(urlPattern)];
+  for (const m of urlMatches) {
+    const raw = m[1] ?? "";
+    const href = raw.replace(/[.,;!?]+$/, "");
+    if (!href || seen.has(href)) continue;
+    seen.add(href);
+    cards.push({
+      id: `web-${index++}`,
+      kind: "web",
+      title: "Web source",
+      sourceUrl: href,
+      connection: activeConnection,
+      route: activeRoute,
+      privacy: activePrivacy,
+    });
+  }
+
+  return cards;
+}
 
 function renderTextWithLinks(text: string) {
   // First split on markdown images, then handle URLs in text fragments
@@ -108,7 +178,13 @@ function renderUrlsInText(text: string, keyOffset: number): React.ReactNode[] {
   });
 }
 
-export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, status }) => {
+export const TranscriptStream: React.FC<TranscriptStreamProps> = ({
+  messages,
+  status,
+  activeConnection,
+  activeRoute,
+  activePrivacy = "unknown",
+}) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -173,6 +249,10 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
                   <p className={msg.isPartial ? "italic animate-pulse whitespace-pre-wrap" : "whitespace-pre-wrap"}>
                     {renderTextWithLinks(msg.text)}
                   </p>
+                  {!isUser &&
+                    inferMediaCards(msg.text, activeConnection, activeRoute, activePrivacy).map((card) => (
+                      <TranscriptMediaCard key={`${msg.id}-${card.id}`} card={card} />
+                    ))}
                 </div>
               </div>
             );

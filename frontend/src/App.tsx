@@ -1520,7 +1520,13 @@ function App() {
           <WaveformVisualizer status={status} volume={isStreaming ? micVolume : 0} />
 
           {/* Chat transcript stream */}
-          <TranscriptStream messages={messages} status={status} />
+          <TranscriptStream
+            messages={messages}
+            status={status}
+            activeConnection={agentBackend === "hermes" ? "hermes" : "lm_studio"}
+            activeRoute={agentBackend === "hermes" ? "external" : "local"}
+            activePrivacy={agentBackend === "hermes" ? "external_active" : "local"}
+          />
 
           <WorkspaceTabs
             activeTab={workspaceTab}
