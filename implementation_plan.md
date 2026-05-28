@@ -163,10 +163,15 @@ Exit checks:
 
 Required before publishing:
 
-- `python3 -m pytest -q`
+- `.venv/bin/python -m pytest -q`
 - Web dashboard smoke run with both connections:
   - LM Studio route
   - Hermes route (HTTP and ws:// where available)
+
+Environment note:
+
+- Treat `.venv/bin/python -m pytest -q` as the authoritative verification command for this repo.
+- Avoid bare `python3 -m pytest -q` unless the venv is activated or dependencies are installed into that interpreter.
 
 Manual checks (must pass):
 
