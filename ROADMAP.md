@@ -29,6 +29,23 @@ to:
 - LM Studio for local OpenAI-compatible model use.
 - Hermes for an external agent stack, including the Android/Termux path.
 
+Near-term architecture direction:
+
+- Treat Vokel as the stable voice/display/control engine.
+- Treat LM Studio and Hermes as first-class **intelligence plugins** behind the
+  shared `AgentBackend` streaming contract.
+- Let plugins describe their capabilities rather than scattering backend
+  conditionals through the app:
+  - route: local or external
+  - tool ownership: Vokel-owned or agent-owned
+  - cancellation support
+  - session reset support
+  - structured tool activity support
+  - media artifact behavior
+- Keep Vokel's responsibilities fixed even as intelligence plugins change:
+  capture, playback, interruption, routing, consent, audit, transcript display,
+  Media Cards, and TTS sanitization.
+
 The user should always be able to see:
 
 - what they are connected to
@@ -176,6 +193,8 @@ Local tool layer:
 - Rich transcript rendering for media
 - Caption-only TTS path with `sanitize_for_speech`
 - Tool-call audio cue
+- Serialized tool-call text suppression for local model leaks
+- URL/media-aware phrase chunking so TTS does not split links mid-stream
 
 Exit check:
 
@@ -185,7 +204,7 @@ Exit check:
 
 ## Completed: Agent Extension First Slice
 
-Status: complete first slice.
+Status: complete first slice, with transport hardening.
 
 Goal: let Vokel serve as the voice front-end for an external agent stack.
 
@@ -196,6 +215,10 @@ Goal: let Vokel serve as the voice front-end for an external agent stack.
   and consent state
 - Execute consent scaffold: arm, cancel, and 3-second hold; no risky action is
   executable until a concrete capability is registered
+- `AgentBackendCapabilities` records backend ownership and behavior.
+- Hermes HTTP and WebSocket clients emit structured `ToolActivityEvent` entries
+  instead of tool markers as assistant text.
+- Hermes startup verifies both gateway health and model text streaming.
 
 Boundary:
 
@@ -206,6 +229,7 @@ Boundary:
 Exit check:
 
 - Hermes health check passes
+- Hermes inference check streams text before a session is accepted
 - Vokel can start a Hermes conversation session
 - barge-in closes the active Hermes HTTP stream
 

@@ -10,5 +10,6 @@
       "requireLocalPort": true,
       "elevateIfNeeded": true
     }
-  }
+  },
+  "python.analysis.typeCheckingMode": "standard"
 }
