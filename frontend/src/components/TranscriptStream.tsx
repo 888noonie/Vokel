@@ -49,6 +49,7 @@ function inferMediaCards(
     });
   }
 
+  const hasMediaCard = cards.some((card) => card.kind === "image" || card.kind === "gif");
   const strippedImages = text.replace(imagePattern, " ");
   const toolMatches = [...strippedImages.matchAll(toolPattern)];
   for (const m of toolMatches) {
@@ -62,6 +63,11 @@ function inferMediaCards(
       route: activeRoute,
       privacy: activePrivacy,
     });
+  }
+
+  // If we already have an image/GIF card, avoid extra web-source cards from attribution links.
+  if (hasMediaCard) {
+    return cards;
   }
 
   const strippedForUrls = strippedImages.replace(toolPattern, " ");
@@ -87,70 +93,12 @@ function inferMediaCards(
 }
 
 function renderTextWithLinks(text: string) {
-  // First split on markdown images, then handle URLs in text fragments
+  // Remove raw media markdown from text body; cards render media separately.
+  const cleaned = text.replace(imagePattern, "");
+  // Then handle plain URLs in remaining text fragments.
   const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  // Reset regex state
-  imagePattern.lastIndex = 0;
-
-  while ((match = imagePattern.exec(text)) !== null) {
-    // Text before this image
-    if (match.index > lastIndex) {
-      parts.push(...renderUrlsInText(text.slice(lastIndex, match.index), lastIndex));
-    }
-
-    const rawAlt = match[1];
-    const src = match[2];
-    const isGif = rawAlt.startsWith("gif:");
-    const alt = isGif ? rawAlt.slice(4) : rawAlt;
-
-    parts.push(
-      isGif ? (
-        <figure key={`gif-${match.index}`} className="my-3 rounded-2xl overflow-hidden border border-purple-500/20 shadow-lg shadow-purple-500/10 bg-zinc-950/40 max-w-[280px]">
-          <img
-            src={src}
-            alt={alt}
-            className="w-full rounded-t-2xl"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
-          />
-          <div className="px-3 py-1.5 text-[10px] text-zinc-500 flex items-center justify-between">
-            <span className="truncate">{alt}</span>
-            <span className="shrink-0 font-mono text-purple-400/60">GIF</span>
-          </div>
-        </figure>
-      ) : (
-        <figure key={`img-${match.index}`} className="my-3 rounded-xl overflow-hidden border border-white/10 shadow-lg shadow-purple-500/5">
-          <img
-            src={src}
-            alt={alt}
-            loading="lazy"
-            className="w-full max-h-72 object-cover"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
-          />
-          {alt && (
-            <figcaption className="px-3 py-2 text-[11px] text-zinc-400 bg-zinc-950/60 leading-relaxed">
-              {alt}
-            </figcaption>
-          )}
-        </figure>
-      )
-    );
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Remaining text after last image
-  if (lastIndex < text.length) {
-    parts.push(...renderUrlsInText(text.slice(lastIndex), lastIndex));
-  }
-
-  return parts.length > 0 ? parts : [text];
+  parts.push(...renderUrlsInText(cleaned, 0));
+  return parts.length > 0 ? parts : [cleaned];
 }
 
 function renderUrlsInText(text: string, keyOffset: number): React.ReactNode[] {

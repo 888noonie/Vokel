@@ -250,6 +250,111 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(llm.messages[0], [{"role": "user", "content": "Search for the latest UK news today."}])
         self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Hermes says hi."})
 
+    async def test_image_followup_context_does_not_hijack_unrelated_short_turn(self) -> None:
+        queries: list[str] = []
+
+        async def fake_search_image(query: str) -> str:
+            queries.append(query)
+            return "![forest](https://example.com/forest.jpg)"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_image",
+                description="Search images.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_image,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("Regular text response.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            tool_registry=registry,
+            enabled_tools={"search_image"},
+        )
+        # Prior conversation included image terms; this used to trigger over-eager context mode.
+        engine.history.append({"role": "assistant", "content": "Here is an image of a forest."})
+
+        await engine.start()
+        try:
+            await engine.submit_turn("what time is it")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(queries, [])
+        self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Regular text response."})
+
+    async def test_image_followup_context_allows_another_one_like_that(self) -> None:
+        queries: list[str] = []
+
+        async def fake_search_image(query: str) -> str:
+            queries.append(query)
+            return "![forest](https://example.com/forest.jpg)"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_image",
+                description="Search images.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_image,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("Nice choice.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            tool_registry=registry,
+            enabled_tools={"search_image"},
+        )
+        engine.history.append({"role": "assistant", "content": "Here is an image of a mountain lake."})
+
+        await engine.start()
+        try:
+            await engine.submit_turn("another one like that")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(queries, ["another one like that"])
+
+    async def test_media_fallback_is_transparent_when_tool_returns_no_renderable_markdown(self) -> None:
+        async def fake_search_image(query: str) -> str:
+            return "Unsplash lookup succeeded but no markdown media block was returned."
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_image",
+                description="Search images.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_image,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("Here is your image!")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            tool_registry=registry,
+            enabled_tools={"search_image"},
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("show me an image of a sunset lake")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        assistant_reply = engine.history[-1]["content"]
+        self.assertIn("no displayable image or GIF URL was returned", assistant_reply)
+        self.assertNotIn("![", assistant_reply)
+
 
 if __name__ == "__main__":
     unittest.main()

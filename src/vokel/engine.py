@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 from contextlib import suppress
 from typing import Literal
 
@@ -21,6 +22,7 @@ from .turns import AsrEngine, TurnProducer
 
 
 AgentMode = Literal["builtin", "hermes"]
+MEDIA_MARKDOWN_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)]+)\)")
 
 
 class ConversationEngine:
@@ -201,8 +203,17 @@ class ConversationEngine:
                 if not spoken or len(spoken) < 5:
                     spoken = "Here you go!"
 
-                # Transcript gets media markdown + caption; TTS only gets the caption
-                full_reply = f"{media_result}\n\n{spoken}"
+                media_block = self._first_media_markdown_block(media_result)
+                if media_block:
+                    # Transcript gets media markdown + caption; TTS only gets the caption.
+                    full_reply = f"{media_result}\n\n{spoken}"
+                else:
+                    # Transparent fallback: never claim media was shown when no renderable block exists.
+                    full_reply = (
+                        "I tried to fetch that media, but no displayable image or GIF URL was returned. "
+                        "Want me to try again with a different query?"
+                    )
+                    spoken = full_reply
                 for phrase in chunker.push(spoken):
                     if not saw_phrase:
                         self.trace.mark("first_phrase_queued", chars=len(phrase))
@@ -342,6 +353,13 @@ class ConversationEngine:
             self.trace.mark("generation_cancelled")
             raise
 
+    @staticmethod
+    def _first_media_markdown_block(text: str) -> str | None:
+        match = MEDIA_MARKDOWN_RE.search(text or "")
+        if not match:
+            return None
+        return match.group(0)
+
     def _recent_history_mentions_gif(self) -> bool:
         """Check if the last few conversation turns were about GIFs."""
         gif_words = ("gif", "giphy", "reaction gif", "meme", "sticker")
@@ -350,6 +368,29 @@ class ConversationEngine:
             if any(w in content for w in gif_words):
                 return True
         return False
+
+    @staticmethod
+    def _looks_like_media_followup(user_text: str) -> bool:
+        """Only treat short follow-ups as media requests when intent is still obvious."""
+        text = user_text.strip().lower()
+        if not text:
+            return False
+        # Direct media words still count as clear intent.
+        media_words = ("gif", "image", "picture", "photo", "meme", "sticker")
+        if any(word in text for word in media_words):
+            return True
+        # Lightweight "another one like that" style follow-ups.
+        followup_phrases = (
+            "another",
+            "one like",
+            "like that",
+            "like this",
+            "more like",
+            "same vibe",
+            "same style",
+            "same energy",
+        )
+        return any(phrase in text for phrase in followup_phrases)
 
     async def _maybe_run_required_gif_search(self, user_text: str) -> str:
         if "search_gif" not in self.enabled_tools:
@@ -379,6 +420,7 @@ class ConversationEngine:
             not explicit_match
             and self._recent_history_mentions_gif()
             and len(user_text.split()) <= 8
+            and self._looks_like_media_followup(user_text)
         )
 
         if not explicit_match and not context_match:
@@ -484,6 +526,7 @@ class ConversationEngine:
             not explicit_match
             and self._recent_history_mentions_image()
             and len(user_text.split()) <= 8
+            and self._looks_like_media_followup(user_text)
         )
 
         if not explicit_match and not context_match:
@@ -658,13 +701,13 @@ class ConversationEngine:
                 "role": "system",
                 "content": (
                     "A GIF was just fetched for the user. Your job is to give a SHORT, "
-                    "fun, playful spoken response (1 sentence max). Rules:\n"
+                    "fun, playful spoken response (1-2 short sentences). Rules:\n"
                     "- React like a friend sharing a funny GIF: 'Ha! Check this out!' or "
                     "'This one's perfect!' or 'Oh this is so good.'\n"
                     "- Match the energy of the GIF topic.\n"
                     "- DO NOT read out URLs, titles, or attribution text.\n"
                     "- DO NOT describe what happens in the GIF frame by frame.\n"
-                    "- Keep it to one short, expressive sentence."
+                    "- Keep it brief and expressive, but do not sound abruptly cut off."
                 ),
             })
         else:
@@ -672,7 +715,7 @@ class ConversationEngine:
                 "role": "system",
                 "content": (
                     "An image was just fetched for the user. Your job is to give a SHORT, "
-                    "warm, spoken response (1-2 sentences max). Rules:\n"
+                    "warm, spoken response (1-2 short sentences). Rules:\n"
                     "- Say something brief like 'Here's a beautiful shot of X for you' or "
                     "'I found this lovely image of X'.\n"
                     "- DO NOT read out URLs, photographer names, or attribution text.\n"
