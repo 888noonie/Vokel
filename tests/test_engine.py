@@ -5,6 +5,7 @@ from typing import Any
 
 from vokel.engine import ConversationEngine
 from vokel.events import Event, TextDeltaEvent, ToolCallEvent
+from vokel.agent_backend import TOOL_ACTIVITY_REPORTING_CONTRACT
 from vokel.inference import ChatMessage
 from vokel.memory import MemoryConfig, MemoryEntry
 from vokel.tools import ToolDefinition, ToolRegistry
@@ -171,6 +172,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queries, ["Search for the top UK political news results today."])
         self.assertEqual(len(llm.messages), 1)
         self.assertIn("Search evidence:\nStory one. Story two. Story three.", llm.messages[0][-1]["content"])
+        self.assertEqual(playback.spoken[0], "I'm searching now.")
         self.assertIn(
             "Based on the search results, story one is the lead.",
             " ".join(playback.spoken),
@@ -211,6 +213,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
             await engine.close()
 
         spoken = " ".join(playback.spoken)
+        self.assertEqual(playback.spoken[0], "I'm searching now.")
         self.assertIn("I searched the web.", spoken)
         self.assertIn("BBC headline", spoken)
         self.assertNotIn("couldn't get", spoken)
@@ -247,8 +250,72 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await engine.close()
 
-        self.assertEqual(llm.messages[0], [{"role": "user", "content": "Search for the latest UK news today."}])
+        self.assertEqual(llm.messages[0][0], {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT})
+        self.assertEqual(llm.messages[0][1], {"role": "user", "content": "Search for the latest UK news today."})
         self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Hermes says hi."})
+
+    async def test_hermes_mode_queues_speech_after_full_response_for_link_sanitizing(self) -> None:
+        llm: Any = FakeLlm([
+            TextDeltaEvent("Here is [generated_image_20260528.png]"),
+            TextDeltaEvent("(sandbox:/mnt/data/generated_image_20260528.png)."),
+        ])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            agent=llm,
+            playback=playback,
+            agent_mode="hermes",
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("Show me the image.")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(len(playback.spoken), 1)
+        self.assertIn("[generated_image_20260528.png](sandbox:/mnt/data/generated_image_20260528.png)", engine.history[-1]["content"])
+
+    async def test_hermes_tool_markers_queue_reassurance_without_visible_marker(self) -> None:
+        llm: Any = FakeLlm([
+            TextDeltaEvent("[tool_call:search_image]"),
+            TextDeltaEvent("Here is the image."),
+        ])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            agent=llm,
+            playback=playback,
+            agent_mode="hermes",
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("Show me an image.")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(playback.spoken[0], "I'm fetching that image now.")
+        self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Here is the image."})
+
+    async def test_local_serialized_tool_call_is_not_visible_text(self) -> None:
+        llm: Any = FakeLlm([
+            TextDeltaEvent("Nice image.\n\n"),
+            TextDeltaEvent('<|tool_call>call:search_image{query:<|"|>simple background texture<|"|>}<tool_call|>'),
+        ])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(llm=llm, playback=playback)
+
+        await engine.start()
+        try:
+            await engine.submit_turn("That image failed to load.")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(playback.spoken, ["Nice image."])
+        self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Nice image."})
+        self.assertNotIn("<|tool_call>", " ".join(playback.spoken))
 
     async def test_image_followup_context_does_not_hijack_unrelated_short_turn(self) -> None:
         queries: list[str] = []
@@ -321,6 +388,7 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
             await engine.close()
 
         self.assertEqual(queries, ["another one like that"])
+        self.assertEqual(playback.spoken[0], "I'm fetching that image now.")
 
     async def test_media_fallback_is_transparent_when_tool_returns_no_renderable_markdown(self) -> None:
         async def fake_search_image(query: str) -> str:

@@ -8,7 +8,16 @@ from dataclasses import dataclass
 from typing import Protocol, Any
 
 URL_RE = re.compile(r"https?://\S+")
-MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+IMAGE_LINK_RE = re.compile(
+    r"(?:https?://(?:[^\s)]*(?:images\.unsplash\.com|media\.giphy\.com)[^\s)]*|[^\s)]*\.(?:png|jpe?g|webp|gif|svg)(?:\?[^\s)]*)?)|(?:^|[\s(])(?:~?/)?[^\s)]+\.(?:png|jpe?g|webp|gif|svg)(?:\?[^\s)]*)?)",
+    re.I,
+)
+TOOL_CALL_MARKER_RE = re.compile(r"\[tool_call:[^\]]+\]")
+SERIALIZED_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call\>\s*call:[A-Za-z0-9_.:-]+(?:\{.*?\})?\s*<tool_call\|>",
+    re.S,
+)
 
 
 class PlaybackSink(Protocol):
@@ -253,9 +262,28 @@ def sanitize_for_speech(text: str) -> str:
     """Convert display-oriented assistant text into calmer TTS input."""
 
     speech = html.unescape(text)
+    speech = TOOL_CALL_MARKER_RE.sub(" ", speech)
+    speech = SERIALIZED_TOOL_CALL_RE.sub(" ", speech)
+
+    def _replace_markdown_link(match: re.Match[str]) -> str:
+        label = match.group(1).strip()
+        target = match.group(2).strip()
+        target_lower = target.lower()
+        label_lower = label.lower()
+        target_looks_image = bool(
+            re.search(r"\.(png|jpe?g|webp|gif|svg)(?:[?#].*)?$", target_lower)
+            or "images.unsplash.com" in target_lower
+            or "giphy.com" in target_lower
+        )
+        label_looks_filename = bool(re.search(r"\.[a-z0-9]{2,6}$", label_lower))
+        if target_looks_image or label_looks_filename:
+            return "Image shown in transcript."
+        return f"{label}. Link available in transcript."
+
     speech = re.sub(r"!\[gif:[^\]]*\]\([^)]+\)", "GIF shown in transcript.", speech)
     speech = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1. Image shown in transcript.", speech)
-    speech = MARKDOWN_LINK_RE.sub(r"\1. Link available in transcript.", speech)
+    speech = MARKDOWN_LINK_RE.sub(_replace_markdown_link, speech)
+    speech = IMAGE_LINK_RE.sub(" Image shown in transcript. ", speech)
     speech = URL_RE.sub(" Link available in transcript. ", speech)
     speech = re.sub(r"```[\s\S]*?```", " code block omitted. ", speech)
     speech = re.sub(r"`([^`]+)`", r"\1", speech)

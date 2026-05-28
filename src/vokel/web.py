@@ -29,7 +29,12 @@ from .auto_followup import (
 from .agent_backend import AgentBackend
 from .config import LmStudioConfig
 from .engine import AgentMode, ConversationEngine
-from .hermes_client import HermesAgentClient, HermesConfig, check_gateway_health
+from .hermes_client import (
+    HermesAgentClient,
+    HermesConfig,
+    check_gateway_health,
+    check_gateway_inference,
+)
 from .web_search import create_default_registry
 from .inference import InferenceError, LocalInferenceClient
 from .memory import MemoryConfig, SQLiteMemoryStore
@@ -448,6 +453,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             agent_client = None
                             await send_agent_event(
                                 "gateway_health_failed",
+                                backend="hermes",
+                                level="error",
+                                detail=str(exc),
+                            )
+                            await send_json({"type": "error", "message": str(exc)})
+                            continue
+
+                        try:
+                            await check_gateway_inference(hermes_config, agent_client._client)
+                            await send_agent_event(
+                                "gateway_inference_ok",
+                                backend="hermes",
+                                detail=f"Hermes model '{hermes_config.model}' is streaming text",
+                                session_id=agent_client.session_id,
+                            )
+                        except InferenceError as exc:
+                            await agent_client.__aexit__(None, None, None)
+                            agent_client = None
+                            await send_agent_event(
+                                "gateway_inference_failed",
                                 backend="hermes",
                                 level="error",
                                 detail=str(exc),

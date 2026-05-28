@@ -7,9 +7,9 @@ import re
 from contextlib import suppress
 from typing import Literal
 
-from .agent_backend import AgentBackend
+from .agent_backend import AgentBackend, TOOL_ACTIVITY_REPORTING_CONTRACT
 from .config import VoiceLoopConfig
-from .events import TextDeltaEvent, ToolCallEvent
+from .events import TextDeltaEvent, ToolActivityEvent, ToolCallEvent
 from .hermes_client import HermesAgentClient
 from .inference import ChatMessage
 from .memory import MemoryConfig, MemoryStore, NullMemoryStore, build_memory_context
@@ -23,6 +23,11 @@ from .turns import AsrEngine, TurnProducer
 
 AgentMode = Literal["builtin", "hermes"]
 MEDIA_MARKDOWN_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)]+)\)")
+TOOL_CALL_MARKER_RE = re.compile(r"\[tool_call:([^\]]+)\]")
+SERIALIZED_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call\>\s*call:([A-Za-z0-9_.:-]+)(?:\{.*?\})?\s*<tool_call\|>",
+    re.DOTALL,
+)
 _PUNCT_ONLY_RE = re.compile(r"^[\s\.\,\!\?\:\;\-\_~…·。！？、]+$")
 
 
@@ -63,6 +68,25 @@ class ConversationEngine:
         self._current_generation: asyncio.Task[None] | None = None
         self._playback_worker: asyncio.Task[None] | None = None
         self._suppress_memory_write = False
+
+    async def _handle_tool_markers(
+        self,
+        token: str,
+        reassured_tools: set[str],
+        *,
+        queue_reassurance: bool,
+    ) -> str:
+        marker_names = TOOL_CALL_MARKER_RE.findall(token)
+        marker_names.extend(SERIALIZED_TOOL_CALL_RE.findall(token))
+        for tool_name in marker_names:
+            self.trace.mark("tool_call_text_suppressed", tool_name=tool_name)
+            if queue_reassurance and tool_name not in reassured_tools:
+                reassured_tools.add(tool_name)
+                self.trace.mark("tool_call_started", tool_name=tool_name)
+                await self._queue_tool_reassurance(tool_name)
+        token = TOOL_CALL_MARKER_RE.sub("", token)
+        token = SERIALIZED_TOOL_CALL_RE.sub("", token)
+        return token
 
     async def start(self) -> None:
         if self._playback_worker is None or self._playback_worker.done():
@@ -180,6 +204,7 @@ class ConversationEngine:
         assistant_text: list[str] = []
         saw_token = False
         saw_phrase = False
+        reassured_tools: set[str] = set()
 
         self.trace.mark("generation_started")
 
@@ -198,6 +223,13 @@ class ConversationEngine:
                 ):
                     if isinstance(event, TextDeltaEvent):
                         token = event.content
+                        token = await self._handle_tool_markers(
+                            token,
+                            reassured_tools,
+                            queue_reassurance=self.agent_mode == "hermes",
+                        )
+                        if not token:
+                            continue
                         if not saw_token:
                             self.trace.mark("first_token")
                             saw_token = True
@@ -288,17 +320,31 @@ class ConversationEngine:
                 async for event in self.agent.stream_chat(messages, tools):
                     if isinstance(event, TextDeltaEvent):
                         token = event.content
+                        token = await self._handle_tool_markers(
+                            token,
+                            reassured_tools,
+                            queue_reassurance=self.agent_mode == "hermes",
+                        )
+                        if not token:
+                            continue
                         if not saw_token:
                             self.trace.mark("first_token")
                             saw_token = True
                         if self.echo_tokens:
                             print(token, end="", flush=True)
                         assistant_text.append(token)
+                        if self.agent_mode == "hermes":
+                            continue
                         for phrase in chunker.push(token):
                             if not saw_phrase:
                                 self.trace.mark("first_phrase_queued", chars=len(phrase))
                                 saw_phrase = True
                             await self._playback_queue.put(phrase)
+                    elif isinstance(event, ToolActivityEvent):
+                        if event.name not in reassured_tools:
+                            reassured_tools.add(event.name)
+                            self.trace.mark("tool_call_started", tool_name=event.name)
+                            await self._queue_tool_reassurance(event.name)
                     elif isinstance(event, ToolCallEvent):
                         tool_calls_made.append(event)
                 
@@ -321,6 +367,7 @@ class ConversationEngine:
                     if self.tool_registry:
                         for tc in tool_calls_made:
                             self.trace.mark("tool_call_started", tool_name=tc.name)
+                            await self._queue_tool_reassurance(tc.name)
                             result = await self.tool_registry.execute(tc)
                             self.history.append({
                                 "role": "tool",
@@ -338,6 +385,15 @@ class ConversationEngine:
                     assistant_text = []
                 else:
                     break
+
+            if self.agent_mode == "hermes" and assistant_text:
+                phrase = "".join(assistant_text).strip()
+                if phrase:
+                    if not saw_phrase:
+                        self.trace.mark("first_phrase_queued", chars=len(phrase))
+                        saw_phrase = True
+                    await self._playback_queue.put(phrase)
+                chunker.reset()
 
             final_phrase = chunker.flush()
             if final_phrase:
@@ -494,6 +550,7 @@ class ConversationEngine:
             query = query[:60].rsplit(" ", 1)[0]
 
         self.trace.mark("tool_call_forced", tool_name="search_gif")
+        await self._queue_tool_reassurance("search_gif")
         tool_call = ToolCallEvent(
             call_id="forced_search_gif",
             name="search_gif",
@@ -603,6 +660,7 @@ class ConversationEngine:
             query = query[:60].rsplit(" ", 1)[0]
 
         self.trace.mark("tool_call_forced", tool_name="search_image")
+        await self._queue_tool_reassurance("search_image")
         tool_call = ToolCallEvent(
             call_id="forced_search_image",
             name="search_image",
@@ -640,6 +698,7 @@ class ConversationEngine:
             return ""
 
         self.trace.mark("tool_call_forced", tool_name="search_web")
+        await self._queue_tool_reassurance("search_web")
         tool_call = ToolCallEvent(
             call_id="forced_search_web",
             name="search_web",
@@ -672,6 +731,16 @@ class ConversationEngine:
         )
         self.trace.mark("tool_call_finished", tool_name="search_web", chars=len(result))
         return result
+
+    async def _queue_tool_reassurance(self, tool_name: str) -> None:
+        phrase_by_tool = {
+            "search_web": "I'm searching now.",
+            "search_image": "I'm fetching that image now.",
+            "search_gif": "I'm fetching that GIF now.",
+        }
+        phrase = phrase_by_tool.get(tool_name, "I'm using that tool now.")
+        self.trace.mark("tool_reassurance_queued", tool_name=tool_name, chars=len(phrase))
+        await self._playback_queue.put(phrase)
 
     @staticmethod
     def _should_force_web_search(user_text: str) -> bool:
@@ -914,7 +983,10 @@ class ConversationEngine:
 
     def _messages_for_generation(self, memory_context: str, user_text: str) -> list[ChatMessage]:
         if self.agent_mode == "hermes":
-            return [{"role": "user", "content": user_text}]
+            return [
+                {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT},
+                {"role": "user", "content": user_text},
+            ]
 
         if not memory_context:
             messages = list(self.history)
@@ -930,7 +1002,8 @@ class ConversationEngine:
                 instruction = (
                     f"You have access to the following tools: {tool_names}. "
                     "You MUST use these tools when the user asks for real-time information, web searches, or news. "
-                    "DO NOT pretend or hallucinate search results. You MUST call the tool."
+                    "DO NOT pretend or hallucinate search results. You MUST call the tool. "
+                    f"{TOOL_ACTIVITY_REPORTING_CONTRACT}"
                 )
                 messages.insert(1, {"role": "system", "content": instruction})
                 

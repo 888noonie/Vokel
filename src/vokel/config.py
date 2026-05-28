@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .agent_backend import TOOL_ACTIVITY_REPORTING_CONTRACT
+
 
 @dataclass(frozen=True)
 class LmStudioConfig:
@@ -22,6 +24,7 @@ class VoiceLoopConfig:
         "The user can interrupt you by pressing a button or speaking if they are "
         "using a headset. Never claim you can browse the web yourself; if a web "
         "search or image search was performed, the results will be provided to "
-        "you directly."
+        "you directly. "
+        f"{TOOL_ACTIVITY_REPORTING_CONTRACT}"
     )
     max_history_messages: int = 20

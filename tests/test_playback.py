@@ -48,6 +48,24 @@ class SpeechSanitizerTests(unittest.TestCase):
             "Read BBC News. Link available in transcript.",
         )
 
+    def test_converts_markdown_image_file_links_to_speakable_hint(self):
+        self.assertEqual(
+            sanitize_for_speech("Here is [generated_image_20260528.png](sandbox:/mnt/data/generated_image_20260528.png)."),
+            "Here is Image shown in transcript.",
+        )
+
+    def test_converts_bare_image_urls_to_speakable_hint(self):
+        self.assertEqual(
+            sanitize_for_speech("Here: https://example.com/generated_image_20260528.png"),
+            "Here: Image shown in transcript.",
+        )
+
+    def test_converts_bare_gif_urls_to_speakable_hint(self):
+        self.assertEqual(
+            sanitize_for_speech("Here: https://media.giphy.com/media/abc/giphy.gif"),
+            "Here: Image shown in transcript.",
+        )
+
     def test_converts_markdown_images_to_speakable_caption(self):
         self.assertEqual(
             sanitize_for_speech("![sunset over mountains](https://images.unsplash.com/photo-abc)\nA beautiful view."),
@@ -58,6 +76,12 @@ class SpeechSanitizerTests(unittest.TestCase):
         self.assertEqual(
             sanitize_for_speech("![gif:mind blown](https://media.giphy.com/abc.gif)\nPowered by GIPHY"),
             "GIF shown in transcript. Powered by GIPHY",
+        )
+
+    def test_removes_serialized_tool_calls(self):
+        self.assertEqual(
+            sanitize_for_speech('Done. <|tool_call>call:search_image{query:<|"|>cat<|"|>}<tool_call|>'),
+            "Done.",
         )
 
 
