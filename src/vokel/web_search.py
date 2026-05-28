@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from html.parser import HTMLParser
 
@@ -13,6 +14,13 @@ SERPAPI_KEY = "06ec3a8ce0bd8d9476df80e7d6e249b82304969b5d45e74ea0df3a4d915e66db"
 _THIN_SNIPPET_MAX_LEN = 120
 _PAGE_SCRAPE_MAX_CHARS = 1200
 _PAGE_SCRAPE_TIMEOUT = 6.0
+_SEARCH_ATTEMPTS = 3
+
+
+def _rate_limit_message(retry_after: str | None) -> str:
+    if retry_after and retry_after.isdigit():
+        return f"Web search is temporarily rate-limited. Please retry in about {retry_after} seconds."
+    return "Web search is temporarily rate-limited. Please try again shortly."
 
 
 async def search_duckduckgo(query: str) -> str:
@@ -30,39 +38,65 @@ async def search_duckduckgo(query: str) -> str:
         "api_key": SERPAPI_KEY,
     }
     async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            results = _ranked_results(data)
-            if not results:
-                return "No search results found."
+        data: dict[str, object] | None = None
+        for attempt in range(1, _SEARCH_ATTEMPTS + 1):
+            try:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+                break
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status == 429:
+                    retry_after = exc.response.headers.get("Retry-After")
+                    return _rate_limit_message(retry_after)
+                if status >= 500 and attempt < _SEARCH_ATTEMPTS:
+                    await asyncio.sleep(0.25 * attempt)
+                    continue
+                return f"Web search failed (HTTP {status}). Please try again."
+            except httpx.TimeoutException:
+                if attempt < _SEARCH_ATTEMPTS:
+                    await asyncio.sleep(0.25 * attempt)
+                    continue
+                return "Web search timed out. Please try again."
+            except httpx.RequestError:
+                if attempt < _SEARCH_ATTEMPTS:
+                    await asyncio.sleep(0.25 * attempt)
+                    continue
+                return "Web search is temporarily unavailable due to a network issue."
+            except Exception:
+                return "Web search failed unexpectedly. Please try again."
 
-            snippets: list[str] = []
-            for index, result in enumerate(results[:3], start=1):
-                title = str(result.get("title") or "Untitled result")
-                snippet = str(result.get("snippet") or "").strip()
-                link = str(result.get("link") or "").strip()
-                source = str(result.get("source") or "").strip()
-                date = str(result.get("date") or "").strip()
+        if data is None:
+            return "Web search failed. Please try again."
 
-                if _snippet_is_thin(snippet) and link:
-                    deeper = await _scrape_page_content(client, link)
-                    if deeper:
-                        snippet = deeper
+        results = _ranked_results(data)
+        if not results:
+            return "No search results found."
 
-                metadata = " - ".join(part for part in (source, date) if part)
-                line = f"{index}. {title}"
-                if metadata:
-                    line += f" ({metadata})"
-                if snippet:
-                    line += f"\n   {snippet}"
-                if link:
-                    line += f"\n   {link}"
-                snippets.append(line)
-            return "\n\n".join(snippets)
-        except Exception as e:
-            return f"Search failed: {e}"
+        snippets: list[str] = []
+        for index, result in enumerate(results[:3], start=1):
+            title = str(result.get("title") or "Untitled result")
+            snippet = str(result.get("snippet") or "").strip()
+            link = str(result.get("link") or "").strip()
+            source = str(result.get("source") or "").strip()
+            date = str(result.get("date") or "").strip()
+
+            if _snippet_is_thin(snippet) and link:
+                deeper = await _scrape_page_content(client, link)
+                if deeper:
+                    snippet = deeper
+
+            metadata = " - ".join(part for part in (source, date) if part)
+            line = f"{index}. {title}"
+            if metadata:
+                line += f" ({metadata})"
+            if snippet:
+                line += f"\n   {snippet}"
+            if link:
+                line += f"\n   {link}"
+            snippets.append(line)
+        return "\n\n".join(snippets)
 
 
 def _snippet_is_thin(snippet: str) -> bool:
