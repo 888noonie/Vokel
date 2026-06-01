@@ -17,7 +17,7 @@ Interruption works hands-free with a headset (separate mic and speaker). On
 laptop speakers the BARGE IN button in the web dashboard is the reliable path,
 because the mic hears its own TTS output without echo cancellation.
 
-## Current Status (May 27, 2026)
+## Current Status (June 1, 2026)
 
 ✅ **Hermes WebSocket Bridge — Fully Working**
 - Direct `ws://` connection to Termux stub on Pixel Pro 8
@@ -76,6 +76,13 @@ LM Studio's OpenAI-compatible chat endpoint streams model output but does not
 execute LM Studio MCP integrations on Vokel's behalf. Platform-managed MCP
 execution requires LM Studio's native chat integration path and configured MCP
 servers. See [docs/agent-tools.md](docs/agent-tools.md) for the boundary.
+
+Current vision scope is intentionally narrower: explicitly armed webcam frames
+are attached to LM Studio visual turns (compat or native path). Hermes voice turns
+receive an explicitly approved camera frame (VisualContext payload, both HTTP and
+ws://) with visible consent, audit, and full barge-in cancellation during capture.
+Hermes gateway forwarding of the frame remains a required downstream change.
+See the [platform adapter build brief](docs/mcp-adapter-build-brief.md).
 
 ## Latency Scoreboard
 

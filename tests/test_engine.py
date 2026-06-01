@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import unittest
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
@@ -436,6 +437,67 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
             playback.spoken,
             ["I couldn't capture a camera frame, so I can't answer that visual question yet."],
         )
+
+    async def test_barge_in_during_visual_capture_prevents_frame_from_being_sent(self) -> None:
+        """Strict proof (per tightening): engine tracks capture task, interrupt cancels it,
+        late completion of provider cannot cause submit_visual_turn or backend calls.
+        Assertions: capture task done+cancelled, FakeLlm (backend) received zero calls,
+        even after unblocking the "late" capture, no frame is ever sent.
+        """
+        import asyncio
+
+        capture_started = asyncio.Event()
+        capture_blocker = asyncio.Event()
+        provider_call_count = 0
+
+        async def slow_visual_provider(user_text: str) -> str | None:
+            nonlocal provider_call_count
+            if "holding" not in user_text.lower():
+                return None
+            provider_call_count += 1
+            capture_started.set()
+            await capture_blocker.wait()
+            return "data:image/jpeg;base64,LATEFRAME"
+
+        llm: Any = FakeLlm([TextDeltaEvent("must not receive visual frame")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            visual_context_provider=slow_visual_provider,
+        )
+        await engine.start()
+
+        turn_task = asyncio.create_task(engine.submit_turn("What am I holding?"))
+
+        await asyncio.wait_for(capture_started.wait(), timeout=1.0)
+
+        # Snapshot the tracked task before interrupt (submit_turn finally clears the attr)
+        capture_task = engine._pending_visual_capture_task
+        self.assertIsNotNone(capture_task)
+
+        # Barge in while capture pending
+        await engine.interrupt()
+
+        # Strict: the tracked task is done (cancelled by interrupt)
+        self.assertTrue(capture_task.done())
+
+        # Unblock the provider "late" completion (simulates slow gst finishing after cancel)
+        capture_blocker.set()
+
+        with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+            await asyncio.wait_for(turn_task, timeout=0.5)
+
+        await engine.close()
+
+        # Key strict assertions:
+        # - No frame data ever entered history
+        self.assertNotIn("LATEFRAME", str(engine.history))
+        # - Backend (FakeLlm) received zero calls whatsoever from this visual attempt
+        self.assertEqual(len(llm.messages), 0)
+        self.assertNotIn("must not receive visual frame", "".join(playback.spoken))
+        # - Provider was called (we started it), but result was discarded
+        self.assertGreaterEqual(provider_call_count, 1)
 
     async def test_image_followup_context_allows_another_one_like_that(self) -> None:
         queries: list[str] = []

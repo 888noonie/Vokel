@@ -16,15 +16,17 @@ default, and Vokel does not duplicate capabilities owned by LM Studio or Hermes.
 
 ## LM Studio Integration Note
 
-Vokel's current `LocalInferenceClient` uses LM Studio's OpenAI-compatible chat
-completions endpoint. That endpoint can carry model tool-call events, but the
-client remains responsible for execution.
+Vokel's `LocalInferenceClient` uses the OpenAI-compatible `/v1/chat/completions`
+for ordinary text and explicitly-armed webcam visual turns (image_url blocks).
 
-LM Studio also provides a native `/api/v1/chat` path for platform-managed MCP
-integrations. Using that path requires configured MCP servers and an adapter
-that selects the intended integration identifiers. Until that adapter is added,
-Vokel does not imply that an LM Studio UI integration is automatically active
-inside a Vokel session.
+The `LmStudioNativeMcpClient` (added in mcp_adapter) targets `/api/v1/chat`
+(derived from the configured URL) when the native toggle is on. It sends
+`integrations` (labels from `~/.lmstudio/mcp.json` or ephemeral objects).
+LM Studio executes its own MCP servers and tool calls; Vokel only consumes the
+text stream and ToolActivity events and renders real returned artifacts. The
+compat path remains available and is the default for vision.
+
+See the build brief for the exact acceptance surface.
 
 ## Media Contract
 
@@ -36,6 +38,11 @@ Camera questions follow a separate local route. When the user explicitly arms
 Camera Questions in Voice Loop and asks a visual question, Vokel captures one
 fresh frame, attaches it to the current local-model turn, and discards the
 frame. This route does not depend on a web provider.
+
+The camera route supports both LM Studio (compat + native /api/v1/chat image inputs)
+and Hermes (via the explicit VisualContext + camera_frame contract on HTTP/ws,
+with visible routing/consent/audit/cancellation before the private frame is sent).
+Hermes gateway must still be updated to accept/forward the frame (separate change).
 
 ## Speech Sanitization
 
@@ -54,4 +61,5 @@ visible without leaking serialized calls into speech.
 
 The mobile rule remains the same: platform capabilities stay behind the active
 connection, while latency, cancellation, consent, and user-visible cues belong
-to Vokel.
+to Vokel. Camera capture must remain an input adapter with an explicit routing
+decision, not a desktop-specific assumption inside the conversation engine.

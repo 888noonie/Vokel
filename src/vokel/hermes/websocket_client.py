@@ -14,7 +14,7 @@ from ..agent_backend import (
     TOOL_ACTIVITY_REPORTING_CONTRACT,
 )
 from ..events import Event, TextDeltaEvent, ToolActivityEvent
-from ..inference import ChatMessage, InferenceError
+from ..inference import ChatMessage, InferenceError, extract_camera_frame
 
 
 class HermesWebSocketClient(AgentBackend):
@@ -93,14 +93,24 @@ class HermesWebSocketClient(AgentBackend):
 
         context = self._build_context(messages)
 
-        await self._send({
+        start_turn: dict[str, Any] = {
             "type": "start_turn",
             "turn_id": turn_id,
             "prompt": user_input,
             "context": context,
             "instructions": TOOL_ACTIVITY_REPORTING_CONTRACT,
             "tools": self.remote_schema.get("tools", []) if self.remote_schema else [],
-        })
+        }
+        camera_frame = extract_camera_frame(messages)
+        if camera_frame:
+            start_turn["camera_frame"] = {
+                "data_url": camera_frame.data_url,
+                "source": camera_frame.source,
+                "captured_at": camera_frame.captured_at,
+                "consent": camera_frame.consent,
+                "contract": camera_frame.contract,
+            }
+        await self._send(start_turn)
 
         try:
             async for raw in self.ws:

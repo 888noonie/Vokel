@@ -20,6 +20,8 @@ from .text_chunker import PhraseChunker
 from .tools import ToolRegistry
 from .auto_followup import AUTO_FOLLOWUP_NUDGE
 from .turns import AsrEngine, TurnProducer
+from .vision import VisualContext
+from typing import Any
 
 
 AgentMode = Literal["builtin", "hermes"]
@@ -47,7 +49,7 @@ class ConversationEngine:
         tool_registry: ToolRegistry | None = None,
         enabled_tools: set[str] | None = None,
         agent_mode: AgentMode = "builtin",
-        visual_context_provider: Callable[[str], Awaitable[str | None]] | None = None,
+        visual_context_provider: Callable[[str], Awaitable[str | VisualContext | None]] | None = None,
     ):
         resolved_agent = agent if agent is not None else llm
         if resolved_agent is None or playback is None:
@@ -65,11 +67,15 @@ class ConversationEngine:
         self.enabled_tools: set[str] = (
             enabled_tools if enabled_tools is not None and agent_mode == "builtin" else set()
         )
-        self.visual_context_provider = visual_context_provider if agent_mode == "builtin" else None
+        # Visual context (explicit armed camera) is now supported for Hermes too via the
+        # camera_frame payload contract. The provider itself (capture + consent UI) lives
+        # in the host layer (web.py) and is passed for both modes.
+        self.visual_context_provider = visual_context_provider
         self.history: list[ChatMessage] = [{"role": "system", "content": self.config.system_prompt}]
         self._playback_queue: asyncio.Queue[str] = asyncio.Queue()
         self._current_generation: asyncio.Task[None] | None = None
         self._playback_worker: asyncio.Task[None] | None = None
+        self._pending_visual_capture_task: asyncio.Task | None = None
         self._suppress_memory_write = False
 
     async def _handle_tool_markers(
@@ -97,6 +103,12 @@ class ConversationEngine:
 
     async def close(self) -> None:
         await self.interrupt()
+        # Ensure any stray pending capture task is cleaned (interrupt should have done it)
+        if self._pending_visual_capture_task and not self._pending_visual_capture_task.done():
+            self._pending_visual_capture_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._pending_visual_capture_task
+        self._pending_visual_capture_task = None
         if self._playback_worker:
             self._playback_worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -112,6 +124,10 @@ class ConversationEngine:
         if isinstance(self.agent, HermesAgentClient):
             new_session = self.agent.reset_session()
             self.trace.mark("hermes_session_reset", session_id=new_session)
+        elif hasattr(self.agent, "reset_conversation"):
+            # Native LM client (and future) continuity reset
+            self.agent.reset_conversation()
+            self.trace.mark("native_lm_conversation_reset")
         self.trace.reset()
         self.trace.mark("conversation_reset")
 
@@ -122,10 +138,28 @@ class ConversationEngine:
             self.trace.mark("utterance_ignored", reason="ambiguous_filler", text=user_text)
             return
         if self.visual_context_provider:
-            image_data_url = await self.visual_context_provider(user_text)
-            if image_data_url is not None:
-                if image_data_url:
-                    await self.submit_visual_turn(user_text, image_data_url, reset_trace=reset_trace)
+            # Track the capture task separately so interrupt() can cancel it *before*
+            # any result (even late) reaches submit_visual_turn or a backend.
+            self._pending_visual_capture_task = asyncio.create_task(
+                self.visual_context_provider(user_text)
+            )
+            try:
+                provided = await self._pending_visual_capture_task
+            finally:
+                self._pending_visual_capture_task = None
+
+            if provided is not None:
+                if isinstance(provided, VisualContext):
+                    vc = provided
+                    if vc.data_url:
+                        await self.submit_visual_turn(
+                            user_text, vc.data_url, reset_trace=reset_trace, visual_context=vc
+                        )
+                    else:
+                        await self._submit_visual_capture_failure(user_text, reset_trace=reset_trace)
+                elif provided:
+                    # backward compat for tests/providers returning plain data_url str
+                    await self.submit_visual_turn(user_text, provided, reset_trace=reset_trace)
                 else:
                     await self._submit_visual_capture_failure(user_text, reset_trace=reset_trace)
                 return
@@ -159,10 +193,15 @@ class ConversationEngine:
         user_text: str,
         image_data_url: str,
         reset_trace: bool = True,
+        *,
+        visual_context: VisualContext | None = None,
     ) -> None:
-        """Submit one local camera frame with the current spoken question."""
-        if self.agent_mode != "builtin":
-            raise RuntimeError("Visual turns are only available for the built-in LM Studio route.")
+        """Submit one local camera frame with the current spoken question.
+
+        Supported for both builtin (LM Studio compat or native) and Hermes (via explicit
+        camera_frame payload contract using VisualContext). The caller (web layer) is
+        responsible for visible routing, consent, audit, and cancellation.
+        """
         await self.interrupt()
         if reset_trace:
             self.trace.reset()
@@ -171,10 +210,20 @@ class ConversationEngine:
         memory_context = await self._retrieve_memory_context(user_text)
         self.history.append({"role": "user", "content": user_text})
         self._trim_history()
+
+        img: dict[str, Any] = {"url": image_data_url}
+        if visual_context is not None:
+            img["visual_context"] = {
+                "source": visual_context.source,
+                "captured_at": visual_context.captured_at,
+                "consent": visual_context.consent,
+                "contract": visual_context.contract,
+            }
+
         visual_message: ChatMessage = {
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": image_data_url}},
+                {"type": "image_url", "image_url": img},
                 {"type": "text", "text": user_text},
             ],
         }
@@ -247,6 +296,16 @@ class ConversationEngine:
             result = cancel()
             if inspect.isawaitable(result):
                 await result
+
+        # Cancel any in-flight visual capture *first* so late GStreamer completion
+        # cannot produce a frame that reaches submit_visual_turn or backend.
+        if self._pending_visual_capture_task and not self._pending_visual_capture_task.done():
+            self.trace.mark("visual_capture_interrupted")
+            self._pending_visual_capture_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._pending_visual_capture_task
+            self._pending_visual_capture_task = None
+
         if self._current_generation and not self._current_generation.done():
             self.trace.mark("interruption_requested")
             self._current_generation.cancel()
@@ -411,10 +470,18 @@ class ConversationEngine:
                                 saw_phrase = True
                             await self._playback_queue.put(phrase)
                     elif isinstance(event, ToolActivityEvent):
-                        if event.name not in reassured_tools:
-                            reassured_tools.add(event.name)
-                            self.trace.mark("tool_call_started", tool_name=event.name)
-                            await self._queue_tool_reassurance(event.name)
+                        status = getattr(event, "status", "started")
+                        if status == "started":
+                            if event.name not in reassured_tools:
+                                reassured_tools.add(event.name)
+                                self.trace.mark("tool_call_started", tool_name=event.name)
+                                await self._queue_tool_reassurance(event.name)
+                        elif status in ("finished", "failed"):
+                            self.trace.mark(
+                                "tool_call_finished" if status == "finished" else "tool_call_failed",
+                                tool_name=event.name,
+                                status=status,
+                            )
                     elif isinstance(event, ToolCallEvent):
                         tool_calls_made.append(event)
                 
@@ -1060,6 +1127,14 @@ class ConversationEngine:
         include_tools: bool = True,
     ) -> list[ChatMessage]:
         if self.agent_mode == "hermes":
+            # Preserve multimodal current_user_message (e.g. visual with image_url block)
+            # so that extract_camera_frame() in Hermes clients receives the armed frame.
+            # Hermes still uses minimal context (it owns full history/session).
+            if current_user_message is not None:
+                return [
+                    {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT},
+                    current_user_message,
+                ]
             return [
                 {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT},
                 {"role": "user", "content": user_text},

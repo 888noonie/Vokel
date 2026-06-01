@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,6 +15,8 @@ from vokel.hermes_client import (
 from vokel.agent_backend import TOOL_ACTIVITY_REPORTING_CONTRACT
 from vokel.inference import InferenceError
 from vokel.events import TextDeltaEvent, ToolActivityEvent
+from vokel.vision import VisualContext
+from vokel.hermes.websocket_client import HermesWebSocketClient
 
 
 class HermesClientTests(unittest.IsolatedAsyncioTestCase):
@@ -196,6 +197,172 @@ class HermesClientTests(unittest.IsolatedAsyncioTestCase):
             await check_gateway_inference(HermesConfig(), mock_http, timeout_seconds=1.0)
         self.assertIn("returned no streamed text", str(ctx.exception))
         self.assertEqual(mock_http.stream.call_count, 2)
+
+
+class HermesCameraFrameTransportTests(unittest.IsolatedAsyncioTestCase):
+    """Actual payload tests for the camera_frame contract over both Hermes transports."""
+
+    def _make_visual_messages(self) -> list[dict]:
+        vc = VisualContext(
+            data_url="data:image/jpeg;base64,TESTFRAME",
+            source="/dev/video4",
+            captured_at="2026-06-02T12:34:56Z",
+            consent="explicit_visual_context_for_turn",
+            contract="hermes_camera_frame_v1",
+        )
+        return [
+            {"role": "system", "content": "ignore"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": vc.data_url, "visual_context": {
+                        "source": vc.source,
+                        "captured_at": vc.captured_at,
+                        "consent": vc.consent,
+                        "contract": vc.contract,
+                    }}},
+                    {"type": "text", "text": "what is this?"},
+                ],
+            },
+        ]
+
+    async def test_hermes_agent_client_responses_includes_full_camera_frame(self) -> None:
+        sse_lines = ['data: {"type":"response.output_text.delta","delta":"ok"}', "data: [DONE]"]
+
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.aiter_lines = aiter_lines
+        mock_response.aclose = AsyncMock()
+
+        mock_stream_ctx = MagicMock()
+        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        mock_http = MagicMock()
+        mock_http.stream = MagicMock(return_value=mock_stream_ctx)
+        mock_http.aclose = AsyncMock()
+
+        client = HermesAgentClient(HermesConfig(base_url="http://127.0.0.1:8642"), client=mock_http)
+        msgs = self._make_visual_messages()
+
+        _ = [e async for e in client.stream_chat(msgs)]
+
+        # Assert the posted payload contained camera_frame with all required fields
+        call = mock_http.stream.call_args
+        payload = call.kwargs["json"]
+        self.assertIn("camera_frame", payload)
+        cf = payload["camera_frame"]
+        self.assertEqual(cf["data_url"], "data:image/jpeg;base64,TESTFRAME")
+        self.assertEqual(cf["source"], "/dev/video4")
+        self.assertEqual(cf["captured_at"], "2026-06-02T12:34:56Z")
+        self.assertEqual(cf["consent"], "explicit_visual_context_for_turn")
+        self.assertEqual(cf["contract"], "hermes_camera_frame_v1")
+
+    async def test_hermes_http_fallback_chat_includes_camera_frame(self) -> None:
+        sse_lines = ['data: {"choices":[{"delta":{"content":"ok"}}]}', "data: [DONE]"]
+
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        # Real 404 response for /v1/responses
+        responses_resp = MagicMock()
+        responses_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not Found", request=MagicMock(), response=MagicMock(status_code=404)
+        )
+        responses_resp.aiter_lines = aiter_lines
+        responses_resp.aclose = AsyncMock()
+
+        responses_ctx = MagicMock()
+        responses_ctx.__aenter__ = AsyncMock(return_value=responses_resp)
+        responses_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        # Success response for fallback
+        chat_resp = MagicMock()
+        chat_resp.raise_for_status = MagicMock()
+        chat_resp.aiter_lines = aiter_lines
+        chat_resp.aclose = AsyncMock()
+
+        chat_ctx = MagicMock()
+        chat_ctx.__aenter__ = AsyncMock(return_value=chat_resp)
+        chat_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        mock_http = MagicMock()
+        call_count = 0
+
+        def stream_side(method, url, **kw):
+            nonlocal call_count
+            call_count += 1
+            if "responses" in url:
+                return responses_ctx
+            return chat_ctx
+
+        mock_http.stream.side_effect = stream_side
+        mock_http.aclose = AsyncMock()
+
+        client = HermesAgentClient(HermesConfig(base_url="http://127.0.0.1:8642"), client=mock_http)
+        msgs = self._make_visual_messages()
+
+        # No broad swallowing: let any real error surface if test is wrong
+        _ = [e async for e in client.stream_chat(msgs)]
+
+        self.assertEqual(call_count, 2)
+        # Second call must be the fallback
+        second_call = mock_http.stream.call_args_list[1]
+        second_url = second_call.args[1]
+        self.assertIn("/v1/chat/completions", second_url)
+        second_payload = second_call.kwargs["json"]
+        self.assertIn("camera_frame", second_payload)
+        cf = second_payload["camera_frame"]
+        self.assertEqual(cf["data_url"], "data:image/jpeg;base64,TESTFRAME")
+        self.assertEqual(cf["source"], "/dev/video4")
+        self.assertEqual(cf["captured_at"], "2026-06-02T12:34:56Z")
+        self.assertEqual(cf["consent"], "explicit_visual_context_for_turn")
+        self.assertEqual(cf["contract"], "hermes_camera_frame_v1")
+
+    async def test_hermes_ws_client_start_turn_includes_camera_frame(self) -> None:
+        # Minimal ws test: monkey the internal send and verify start_turn dict
+        client = HermesWebSocketClient("ws://127.0.0.1:9999")
+
+        # fake ws
+        sent = []
+
+        async def fake_send(obj):
+            # real code json.dumps before send; accept str or dict
+            if isinstance(obj, str):
+                import json
+                sent.append(json.loads(obj))
+            else:
+                sent.append(obj)
+
+        client.ws = MagicMock()
+        client.ws.send = fake_send
+        client.remote_schema = {"tools": []}
+        # connect already "done" by setting ws
+
+        msgs = self._make_visual_messages()
+        # We only care about the start_turn payload; run until first send
+        try:
+            agen = client.stream_chat(msgs)
+            # trigger the send inside
+            await agen.__anext__()  # will try to recv etc, but we only need the start send
+        except Exception:
+            pass  # expected, we only inspect the sent start_turn
+
+        # Find the start_turn
+        start = next((s for s in sent if s.get("type") == "start_turn"), None)
+        self.assertIsNotNone(start)
+        self.assertIn("camera_frame", start)
+        cf = start["camera_frame"]
+        self.assertEqual(cf["data_url"], "data:image/jpeg;base64,TESTFRAME")
+        self.assertEqual(cf["source"], "/dev/video4")
+        self.assertEqual(cf["captured_at"], "2026-06-02T12:34:56Z")
+        self.assertEqual(cf["consent"], "explicit_visual_context_for_turn")
+        self.assertEqual(cf["contract"], "hermes_camera_frame_v1")
 
 
 if __name__ == "__main__":

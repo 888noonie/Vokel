@@ -128,6 +128,8 @@ function App() {
   });
   const [lmStudioUrl, setLmStudioUrl] = useState("http://localhost:1234/v1/chat/completions");
   const [lmStudioModel, setLmStudioModel] = useState("gemma-4-e4b-it-ultra-uncensored-heretic");
+  const [useLmNativeMcp, setUseLmNativeMcp] = useState(false);
+  const [lmMcpIntegrations, setLmMcpIntegrations] = useState("");  // comma sep e.g. mcp/playwright,mcp/fetch
   const [playbackBackend, setPlaybackBackend] = useState(savedVoicePrefs.playbackBackend);
   const [voice, setVoice] = useState(savedVoicePrefs.voice);
   const [ttsSpeed, setTtsSpeed] = useState(savedVoicePrefs.ttsSpeed);
@@ -559,8 +561,10 @@ function App() {
         memory: agentBackend === "builtin" && memoryEnabled,
         auto_followup: agentBackend === "builtin" && autoFollowupEnabled,
         auto_followup_seconds: autoFollowupSeconds,
-        vision_voice_enabled: agentBackend === "builtin" && visionVoiceEnabled,
+        vision_voice_enabled: visionVoiceEnabled,
         vision_device: visionDevice,
+        use_lm_native_chat: useLmNativeMcp,
+        lm_mcp_integrations: lmMcpIntegrations,
         // Persona + Live Voice Presence (Command #2)
         persona: currentPersona,
         persona_prompt: personaPrompt,
@@ -1238,6 +1242,29 @@ function App() {
                   onChange={(e) => setLmStudioModel(e.target.value)}
                   className="vokel-field"
                 />
+              </div>
+
+              {/* LM Studio native MCP adapter (smallest slice per build brief) */}
+              <div className="pt-1">
+                <label className="flex items-center gap-2 text-xs font-mono text-zinc-400 mb-1.5">
+                  <input
+                    type="checkbox"
+                    disabled={isSessionActive || agentBackend === "hermes"}
+                    checked={useLmNativeMcp}
+                    onChange={(e) => setUseLmNativeMcp(e.target.checked)}
+                  />
+                  Use native /api/v1/chat (MCP integrations from ~/.lmstudio/mcp.json)
+                </label>
+                {useLmNativeMcp && agentBackend !== "hermes" && (
+                  <input
+                    type="text"
+                    disabled={isSessionActive}
+                    placeholder="mcp/playwright, mcp/fetch (comma separated)"
+                    value={lmMcpIntegrations}
+                    onChange={(e) => setLmMcpIntegrations(e.target.value)}
+                    className="vokel-field text-xs"
+                  />
+                )}
               </div>
 
               <div>

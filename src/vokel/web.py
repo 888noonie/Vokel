@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Literal
 
@@ -36,7 +37,7 @@ from .hermes_client import (
     check_gateway_health,
     check_gateway_inference,
 )
-from .inference import InferenceError, LocalInferenceClient
+from .inference import InferenceError, LocalInferenceClient, LmStudioNativeMcpClient
 from .memory import MemoryConfig, SQLiteMemoryStore
 from .playback import (
     KOKORO_VOICES,
@@ -49,8 +50,9 @@ from .playback import (
 from .telemetry import LatencyTrace, TraceEvent
 from .vision import (
     DEFAULT_VISION_PROMPT,
+    VisualContext,
     analyze_camera_frame,
-    capture_camera_frame,
+    capture_camera_frame_async,
     is_loopback_url,
     list_camera_devices,
     should_capture_visual_context,
@@ -383,11 +385,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "detail": detail,
         })
 
-    async def capture_voice_vision_context() -> str | None:
-        if not is_loopback_url(vision_lm_url):
+    async def capture_voice_vision_context() -> str | VisualContext | None:
+        # Builtin LM route: private frame only to localhost LM endpoint.
+        # Hermes route: local capture; frame sent only via explicitly consented
+        # camera_frame payload contract (visible in audit/transcript). No LM loopback required.
+        if not hermes_mode and not is_loopback_url(vision_lm_url):
             await send_json({
                 "type": "error",
-                "message": "Voice camera context requires a loopback LM Studio endpoint.",
+                "message": "Voice camera context requires a loopback LM Studio endpoint for the local model route.",
             })
             return None
         if vision_device not in {camera.path for camera in list_camera_devices()}:
@@ -405,14 +410,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         )
         try:
             async with _VISION_CAPTURE_LOCK:
-                captured = await asyncio.to_thread(
-                    capture_camera_frame,
+                captured = await capture_camera_frame_async(
                     device=vision_device,
                     width=640,
                     height=480,
                     framerate=30,
                     warmup_frames=8,
                 )
+        except asyncio.CancelledError:
+            # The capture helper stopped GStreamer before the lock was released.
+            raise
         except RuntimeError as exc:
             await send_agent_event(
                 "visual_context_capture_failed",
@@ -437,9 +444,27 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             device=captured.device,
             capture_seconds=captured.capture_seconds,
         )
-        return captured.image_data_url
+        if hermes_mode:
+            await send_agent_event(
+                "external_media_route_initiated",
+                backend="hermes",
+                detail="Explicitly approved camera frame routed to Hermes (camera_frame contract)",
+                device=captured.device,
+                route="camera_frame",
+                consent="voice_context_arm",
+            )
 
-    async def provide_voice_visual_context(user_text: str) -> str | None:
+        captured_at = datetime.now(timezone.utc).isoformat()
+        vc = VisualContext(
+            data_url=captured.image_data_url,
+            source=captured.device or vision_device,
+            captured_at=captured_at,
+            consent="explicit_visual_context_for_turn",
+            contract="hermes_camera_frame_v1",
+        )
+        return vc
+
+    async def provide_voice_visual_context(user_text: str) -> str | VisualContext | None:
         if not vision_voice_enabled or not should_capture_visual_context(user_text):
             return None
         await send_json({"type": "status", "status": "capturing_vision"})
@@ -533,7 +558,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     session_mode = data.get("mode", "local")
                     url = data.get("url", LmStudioConfig.url)
                     model = data.get("model", LmStudioConfig.model)
-                    vision_voice_enabled = bool(data.get("vision_voice_enabled", False)) and not hermes_mode
+                    # Allow voice camera (explicit armed) for both LM and Hermes.
+                    # For Hermes the frame travels under the camera_frame contract with visible consent.
+                    vision_voice_enabled = bool(data.get("vision_voice_enabled", False))
                     vision_device = str(data.get("vision_device", "/dev/video4"))
                     vision_lm_url = str(url)
                     voice = str(data.get("voice", "af_heart"))
@@ -565,8 +592,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         )
                         agent_client = HermesAgentClient(hermes_config)
                     else:
-                        lm_config = LmStudioConfig(url=url, model=model)
-                        agent_client = LocalInferenceClient(lm_config)
+                        use_native = bool(data.get("use_lm_native_chat") or data.get("lm_native_mcp"))
+                        mcp_ids = data.get("lm_mcp_integrations") or data.get("mcp_integrations") or []
+                        if isinstance(mcp_ids, str):
+                            mcp_ids = [s.strip() for s in mcp_ids.split(",") if s.strip()]
+                        if use_native:
+                            lm_config = LmStudioConfig(
+                                url=url, model=model, use_native_chat=True, mcp_integrations=list(mcp_ids)
+                            )
+                            agent_client = LmStudioNativeMcpClient(lm_config, integrations=list(mcp_ids))
+                        else:
+                            lm_config = LmStudioConfig(url=url, model=model)
+                            agent_client = LocalInferenceClient(lm_config)
                     await agent_client.__aenter__()
                     await send_agent_event(
                         "agent_client_ready",
@@ -821,10 +858,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     requested_device = str(data.get("device", vision_device))
                     requested_enabled = bool(data.get("enabled", False))
                     available_devices = {camera.path for camera in list_camera_devices()}
-                    if requested_enabled and current_agent_backend != "builtin":
+                    # Camera context now supported for Hermes too (external frame route with consent).
+                    if requested_enabled and current_agent_backend not in ("builtin", "hermes"):
                         await send_json({
                             "type": "error",
-                            "message": "Voice camera context is only available with the LM Studio connection.",
+                            "message": "Voice camera context requires a supported agent backend (LM Studio or Hermes).",
                         })
                         continue
                     if requested_enabled and requested_device not in available_devices:

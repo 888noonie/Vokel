@@ -8,9 +8,12 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Callable
 
-from .agent_backend import AgentBackendCapabilities, TOOL_ACTIVITY_REPORTING_CONTRACT
+from .agent_backend import (
+    AgentBackendCapabilities,
+    TOOL_ACTIVITY_REPORTING_CONTRACT,
+)
 from .events import Event, TextDeltaEvent, ToolActivityEvent
-from .inference import ChatMessage, InferenceError
+from .inference import ChatMessage, InferenceError, extract_camera_frame
 
 if TYPE_CHECKING:
     import httpx
@@ -61,6 +64,8 @@ def _extract_system_instructions(messages: Sequence[ChatMessage]) -> str:
         if isinstance(content, str) and content.strip():
             parts.append(content.strip())
     return "\n\n".join(parts)
+
+
 
 
 def _parse_responses_sse_payload(payload: dict[str, Any]) -> str:
@@ -168,7 +173,6 @@ def format_gateway_error(config: HermesConfig, exc: Exception) -> str:
 
 async def check_gateway_health(config: HermesConfig, client: "httpx.AsyncClient") -> None:
     """Fail fast when the Hermes API server is unreachable or misconfigured."""
-    import httpx
 
     headers: dict[str, str] = {}
     if config.api_key:
@@ -368,6 +372,18 @@ class HermesAgentClient:
             "stream": True,
         }
 
+        camera_frame = extract_camera_frame(messages)
+        if camera_frame:
+            # Convert narrow VisualContext to the wire payload shape for the contract.
+            # (Gateway side still needs to accept + forward this.)
+            payload["camera_frame"] = {
+                "data_url": camera_frame.data_url,
+                "source": camera_frame.source,
+                "captured_at": camera_frame.captured_at,
+                "consent": camera_frame.consent,
+                "contract": camera_frame.contract,
+            }
+
         try:
             async for event in self._stream_responses(payload):
                 yield event
@@ -431,6 +447,17 @@ class HermesAgentClient:
             "messages": chat_messages,
             "stream": True,
         }
+
+        camera_frame = extract_camera_frame(messages)
+        if camera_frame:
+            # Fallback path also carries the frame for gateway compatibility
+            payload["camera_frame"] = {
+                "data_url": camera_frame.data_url,
+                "source": camera_frame.source,
+                "captured_at": camera_frame.captured_at,
+                "consent": camera_frame.consent,
+                "contract": camera_frame.contract,
+            }
         try:
             async with self._client.stream(
                 "POST",

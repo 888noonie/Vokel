@@ -31,6 +31,33 @@ TOOL_ACTIVITY_REPORTING_CONTRACT = (
 )
 
 
+HERMES_CAMERA_FRAME_CONTRACT = (
+    "EXPLICIT CAMERA FRAME PAYLOAD CONTRACT (v1) for Hermes gateway.\n"
+    "Vokel sends ONE fresh, explicitly user-approved webcam frame ONLY for the current turn "
+    "when Camera Questions + Hermes backend are both armed. The frame is a data: URL (jpeg base64). "
+    "Frame is captured locally, consent+audit recorded BEFORE send. Uses VisualContext (source, captured_at, consent, contract).\n"
+    "\n"
+    "HTTP (HermesAgentClient):\n"
+    "  Add to the /v1/responses (or fallback /v1/chat/completions) payload:\n"
+    "    \"camera_frame\": {\n"
+    "      \"data_url\": \"...\",\n"
+    "      \"source\": \"/dev/video4\",\n"
+    "      \"captured_at\": \"...\",\n"
+    "      \"consent\": \"...\",\n"
+    "      \"contract\": \"hermes_camera_frame_v1\"\n"
+    "    }\n"
+    "\n"
+    "WebSocket (HermesWebSocketClient):\n"
+    "  Inside the \"start_turn\" object: \"camera_frame\": { same }\n"
+    "\n"
+    "Barge-in / interrupt during capture or generation prevents the frame from reaching any backend "
+    "(GStreamer is terminated, the frame is discarded, and the capture lock is held until process exit).\n"
+    "\n"
+    "Gateway (Hermes) side changes required (separate): accept camera_frame on both transports, forward as image, return artifacts only as real markdown/URLs.\n"
+    "Android: CameraX produces equivalent VisualContext; same extract/payload path."
+)
+
+
 @runtime_checkable
 class AgentBackend(Protocol):
     """Streaming agent contract shared by built-in LM Studio and Hermes gateway clients."""

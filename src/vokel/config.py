@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .agent_backend import TOOL_ACTIVITY_REPORTING_CONTRACT
 
@@ -12,6 +12,10 @@ class LmStudioConfig:
     temperature: float = 0.8
     top_p: float = 0.95
     timeout_seconds: float = 60.0
+    # Native /api/v1/chat MCP path (when True, client derives /api/v1/chat from base and
+    # passes integrations; LM Studio executes its own configured MCP servers from mcp.json)
+    use_native_chat: bool = False
+    mcp_integrations: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

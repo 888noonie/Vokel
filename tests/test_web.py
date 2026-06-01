@@ -273,3 +273,76 @@ def test_detect_voice_session_command_resume() -> None:
 def test_detect_voice_session_command_ignores_normal_utterances() -> None:
     assert detect_voice_session_command("what time is it") is None
     assert detect_voice_session_command("search latest UK AI news") is None
+
+
+def test_voice_vision_capture_cancel_stops_process_before_releasing_lock():
+    import asyncio
+    from contextlib import suppress
+
+    from vokel.vision import capture_camera_frame_async
+    from vokel.web import _VISION_CAPTURE_LOCK
+
+    async def _run():
+        process_started = asyncio.Event()
+        terminate_requested = asyncio.Event()
+        process_may_exit = asyncio.Event()
+        second_acquired = asyncio.Event()
+
+        class FakeProcess:
+            returncode = None
+            terminate_called = False
+            kill_called = False
+
+            async def wait(self):
+                await process_may_exit.wait()
+                self.returncode = -15
+                return self.returncode
+
+            def terminate(self):
+                self.terminate_called = True
+                terminate_requested.set()
+
+            def kill(self):
+                self.kill_called = True
+
+        process = FakeProcess()
+
+        async def create_subprocess_exec(*_args):
+            process_started.set()
+            return process
+
+        async def protected_capture():
+            async with _VISION_CAPTURE_LOCK:
+                return await capture_camera_frame_async(
+                    device="/dev/video4",
+                    width=640,
+                    height=480,
+                    framerate=30,
+                    warmup_frames=8,
+                )
+
+        async def try_second_capture():
+            async with _VISION_CAPTURE_LOCK:
+                second_acquired.set()
+
+        with patch("vokel.vision.asyncio.create_subprocess_exec", create_subprocess_exec):
+            outer = asyncio.create_task(protected_capture())
+            await asyncio.wait_for(process_started.wait(), timeout=1.0)
+            outer.cancel()
+            await asyncio.wait_for(terminate_requested.wait(), timeout=1.0)
+            assert process.terminate_called
+
+            second = asyncio.create_task(try_second_capture())
+            await asyncio.sleep(0)
+            assert not second_acquired.is_set()
+            assert not outer.done()
+
+            process_may_exit.set()
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait_for(outer, timeout=1.0)
+            await asyncio.wait_for(second, timeout=1.0)
+            assert second_acquired.is_set()
+            assert outer.cancelled()
+            assert not process.kill_called
+
+    asyncio.run(_run())

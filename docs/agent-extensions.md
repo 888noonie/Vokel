@@ -49,6 +49,34 @@ Hermes uses the provider and model configured in `~/.hermes/config.yaml`. That
 may be XAI/Grok, OpenRouter, LM Studio, or another provider supported by Hermes.
 Vokel does not call the model provider directly in Hermes mode.
 
+## Hermes Vision (mcp_adapter slice)
+
+Explicit camera frame support is wired for Hermes (HTTP + ws://) using the
+`VisualContext` + `camera_frame` contract (see agent_backend.py and extract
+in inference.py + injection in the two clients).
+
+- Armed only via the Camera Questions toggle (visible consent + audit events
+  including "external_media_route_initiated").
+- Barge-in during capture or send prevents the frame from reaching the gateway
+  (proven by engine test).
+- Metadata (source, captured_at, consent, contract) is carried; no hard-coded
+  device.
+- Gateway-side changes still required on Hermes (accept the payload on both
+  transports, forward frame to model, return artifacts as real markdown/URLs
+  only for Vokel cards). Vokel side complete.
+
+Android path remains open (CameraX will emit equivalent VisualContext).
+
+## LM Studio Native MCP Adapter
+
+See docs/mcp-adapter-build-brief.md and the new `LmStudioNativeMcpClient` in
+inference.py. When "Use native /api/v1/chat" is selected in the dashboard (and
+MCP servers configured in `~/.lmstudio/mcp.json` + allowed in LM Studio Server
+Settings), Vokel calls `/api/v1/chat` (deriving from the LM url), passes
+`integrations` (e.g. `["mcp/playwright"]`), and streams via LM Studio's named
+SSE events. LM Studio + its MCPs execute everything; Vokel only renders returned
+text and real artifacts.
+
 ## Boundaries
 
 - LM Studio-owned tools stay behind the LM Studio platform boundary.

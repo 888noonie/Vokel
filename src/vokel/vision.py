@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -37,6 +38,22 @@ class CapturedVisionFrame:
     device: str
     image_data_url: str
     capture_seconds: float
+
+
+@dataclass(frozen=True)
+class VisualContext:
+    """Narrow payload for an explicitly user-armed camera (or future CameraX) frame.
+
+    Carries everything needed for external agent routing (Hermes camera_frame contract)
+    or native LM vision. Source is the device id or platform identifier (e.g. "/dev/video4",
+    "android:camera:0"). Never used for ambient capture.
+    """
+
+    data_url: str
+    source: str
+    captured_at: str | None = None  # ISO-8601 UTC
+    consent: str = "explicit_visual_context_for_turn"
+    contract: str = "hermes_camera_frame_v1"
 
 
 _VISUAL_CONTEXT_SPACE_RE = re.compile(r"\s+")
@@ -130,6 +147,64 @@ def capture_frame(
         raise RuntimeError(f"Camera capture failed for {device}.") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"Camera capture timed out for {device}.") from exc
+
+    frames = sorted(output_dir.glob("frame-*.jpg"))
+    if not frames:
+        raise RuntimeError(f"Camera capture produced no JPEG frame for {device}.")
+    return frames[-1]
+
+
+async def _stop_capture_process(
+    process: asyncio.subprocess.Process,
+    *,
+    terminate_grace_seconds: float = 0.25,
+) -> None:
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=terminate_grace_seconds)
+    except TimeoutError:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+
+
+async def capture_frame_async(
+    *,
+    device: str,
+    output_dir: Path,
+    width: int,
+    height: int,
+    framerate: int,
+    warmup_frames: int,
+) -> Path:
+    """Capture one frame while keeping the GStreamer process cancellable."""
+    output_pattern = output_dir / "frame-%02d.jpg"
+    command = build_capture_command(
+        device=device,
+        output_pattern=output_pattern,
+        width=width,
+        height=height,
+        framerate=framerate,
+        warmup_frames=warmup_frames,
+    )
+    try:
+        process = await asyncio.create_subprocess_exec(*command)
+    except FileNotFoundError as exc:
+        raise RuntimeError("Install GStreamer so `gst-launch-1.0` is available.") from exc
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=15)
+    except asyncio.CancelledError:
+        await _stop_capture_process(process)
+        raise
+    except TimeoutError as exc:
+        await _stop_capture_process(process)
+        raise RuntimeError(f"Camera capture timed out for {device}.") from exc
+
+    if process.returncode:
+        raise RuntimeError(f"Camera capture failed for {device}.")
 
     frames = sorted(output_dir.glob("frame-*.jpg"))
     if not frames:
@@ -242,6 +317,34 @@ def capture_camera_frame(
     with tempfile.TemporaryDirectory(prefix="vokel-live-vision-") as tmp:
         started = time.monotonic()
         frame = capture_frame(
+            device=device,
+            output_dir=Path(tmp),
+            width=width,
+            height=height,
+            framerate=framerate,
+            warmup_frames=warmup_frames,
+        )
+        captured = time.monotonic()
+        frame_data_url = image_data_url(frame.read_bytes())
+
+    return CapturedVisionFrame(
+        device=device,
+        image_data_url=frame_data_url,
+        capture_seconds=captured - started,
+    )
+
+
+async def capture_camera_frame_async(
+    *,
+    device: str,
+    width: int,
+    height: int,
+    framerate: int,
+    warmup_frames: int,
+) -> CapturedVisionFrame:
+    with tempfile.TemporaryDirectory(prefix="vokel-live-vision-") as tmp:
+        started = time.monotonic()
+        frame = await capture_frame_async(
             device=device,
             output_dir=Path(tmp),
             width=width,
