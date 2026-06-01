@@ -95,7 +95,7 @@ export function WorkspaceTabs({
             </div>
           </div>
           <div className="vokel-panel-subtle rounded-2xl px-3 py-2">
-            <div className="text-[10px] font-mono uppercase text-zinc-500">Backend</div>
+            <div className="text-[10px] font-mono uppercase text-zinc-500">Connection</div>
             <div className="mt-1 text-xs font-mono text-zinc-300">{backend}</div>
           </div>
         </div>

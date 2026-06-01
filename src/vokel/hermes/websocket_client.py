@@ -8,8 +8,12 @@ from typing import Any
 import websockets
 from websockets.asyncio.client import ClientConnection
 
-from ..agent_backend import AgentBackend
-from ..events import Event, TextDeltaEvent
+from ..agent_backend import (
+    AgentBackend,
+    AgentBackendCapabilities,
+    TOOL_ACTIVITY_REPORTING_CONTRACT,
+)
+from ..events import Event, TextDeltaEvent, ToolActivityEvent
 from ..inference import ChatMessage, InferenceError
 
 
@@ -18,6 +22,12 @@ class HermesWebSocketClient(AgentBackend):
 
     Auto-selected when the configured URL starts with ws:// or wss://.
     """
+
+    capabilities = AgentBackendCapabilities(
+        owns_tools=True,
+        supports_session_reset=False,
+        emits_tool_activity=True,
+    )
 
     def __init__(self, url: str, timeout: float = 30.0, max_context_messages: int = 12):
         self.url = url
@@ -88,6 +98,7 @@ class HermesWebSocketClient(AgentBackend):
             "turn_id": turn_id,
             "prompt": user_input,
             "context": context,
+            "instructions": TOOL_ACTIVITY_REPORTING_CONTRACT,
             "tools": self.remote_schema.get("tools", []) if self.remote_schema else [],
         })
 
@@ -107,9 +118,8 @@ class HermesWebSocketClient(AgentBackend):
                 if msg["type"] == "delta":
                     yield TextDeltaEvent(content=msg.get("content", ""))
                 elif msg["type"] == "tool_call":
-                    # v0.1: surface as text delta until proper ToolCallEvent support
                     name = msg.get("name", "unknown")
-                    yield TextDeltaEvent(content=f"[tool_call:{name}]")
+                    yield ToolActivityEvent(name=str(name or "unknown"))
                 elif msg["type"] == "turn_complete":
                     break
                 elif msg["type"] == "error":

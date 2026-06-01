@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from .config import LmStudioConfig
 from .events import Event, TextDeltaEvent, ToolCallEvent
+from .agent_backend import AgentBackendCapabilities
 
 if TYPE_CHECKING:
     import httpx
@@ -38,6 +39,11 @@ def parse_sse_delta(line: str) -> dict[str, Any] | None:
 
 
 class LocalInferenceClient:
+    capabilities = AgentBackendCapabilities(
+        owns_tools=False,
+        emits_tool_activity=True,
+    )
+
     def __init__(self, config: LmStudioConfig, client: "httpx.AsyncClient | None" = None):
         self.config = config
         self._client = client

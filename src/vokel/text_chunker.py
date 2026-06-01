@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
-CLAUSE_BOUNDARIES = frozenset({".", "!", "?", ",", ";", ":", "\n"})
+CLAUSE_BOUNDARIES = frozenset({".", "!", "?", ",", ";", "\n"})
+_IMAGE_PATH_RE = re.compile(r"\.(?:png|jpe?g|webp|gif|svg)(?:[?#][^\s)]*)?$", re.I)
 
 
 @dataclass
@@ -35,7 +37,10 @@ class PhraseChunker:
         self._buffer.clear()
 
     def _should_flush(self, char: str) -> bool:
-        buffered_len = len("".join(self._buffer).strip())
+        buffer = "".join(self._buffer)
+        buffered_len = len(buffer.strip())
+        if self._has_incomplete_link_or_url(buffer):
+            return False
         if buffered_len >= self.max_chars:
             return True
         return buffered_len >= self.min_chars and char in CLAUSE_BOUNDARIES
@@ -44,3 +49,19 @@ class PhraseChunker:
         phrase = "".join(self._buffer).strip()
         self._buffer.clear()
         return phrase or None
+
+    @staticmethod
+    def _has_incomplete_link_or_url(buffer: str) -> bool:
+        if not buffer.strip():
+            return False
+        tail = buffer.rsplit(maxsplit=1)[-1]
+        if not tail:
+            return False
+        if tail.rfind("[") > tail.rfind("]"):
+            return True
+        if tail.count("](") > tail.count(")"):
+            return True
+        lower_tail = tail.lower()
+        if "http://" in lower_tail or "https://" in lower_tail or "sandbox:" in lower_tail:
+            return True
+        return bool(_IMAGE_PATH_RE.search(tail))

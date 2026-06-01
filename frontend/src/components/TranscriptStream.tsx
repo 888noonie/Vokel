@@ -1,5 +1,7 @@
 import React, { useEffect, useRef } from "react";
-import { User, Radio, Volume2 } from "lucide-react";
+import { User, Radio, Volume2, Loader2 } from "lucide-react";
+import { TranscriptMediaCard } from "./TranscriptMediaCard";
+import type { MediaCard } from "./mediaCardTypes";
 
 export interface Message {
   id: string;
@@ -11,76 +13,165 @@ export interface Message {
 interface TranscriptStreamProps {
   messages: Message[];
   status: "idle" | "listening" | "generating" | "speaking" | "paused";
+  activeConnection: "lm_studio" | "hermes";
+  activeRoute: "local" | "external";
+  activePrivacy?: "local" | "external_active" | "unknown";
+  activeAction?: string | null;
 }
 
 const urlPattern = /(https?:\/\/[^\s)]+)/g;
-const imagePattern = /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g;
+const imagePattern = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+const markdownLinkPattern = /\[([^\]]+)\]\(([^)\s]+)\)/g;
+const toolPattern = /\[tool_call:([^\]]+)\]/g;
+const imageFilePattern = /\.(png|jpe?g|webp|gif|svg)(?:[?#][^\s)]*)?$/i;
 
-function renderTextWithLinks(text: string) {
-  // First split on markdown images, then handle URLs in text fragments
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
+function isLikelyImageLinkTarget(label: string, target: string): boolean {
+  const lowerTarget = target.toLowerCase();
+  const lowerLabel = label.toLowerCase();
+  if (imageFilePattern.test(lowerTarget)) return true;
+  if (lowerTarget.includes("images.unsplash.com")) return true;
+  if (lowerTarget.includes("media.giphy.com")) return true;
+  if (lowerLabel.includes("image") || lowerLabel.includes("photo") || lowerLabel.includes("picture") || lowerLabel.includes("gif")) {
+    return /^https?:\/\//.test(lowerTarget);
+  }
+  return false;
+}
 
-  // Reset regex state
-  imagePattern.lastIndex = 0;
+function isLikelyPlainImageUrl(target: string): boolean {
+  const lowerTarget = target.toLowerCase();
+  return (
+    imageFilePattern.test(lowerTarget) ||
+    lowerTarget.includes("images.unsplash.com") ||
+    lowerTarget.includes("media.giphy.com")
+  );
+}
 
-  while ((match = imagePattern.exec(text)) !== null) {
-    // Text before this image
-    if (match.index > lastIndex) {
-      parts.push(...renderUrlsInText(text.slice(lastIndex, match.index), lastIndex));
-    }
+function inferMediaCards(
+  text: string,
+  activeConnection: "lm_studio" | "hermes",
+  activeRoute: "local" | "external",
+  activePrivacy: "local" | "external_active" | "unknown"
+): MediaCard[] {
+  const cards: MediaCard[] = [];
+  let index = 0;
+  const imageSources = new Set<string>();
 
-    const rawAlt = match[1];
-    const src = match[2];
+  const imageMatches = [...text.matchAll(imagePattern)];
+  for (const m of imageMatches) {
+    const rawAlt = m[1] ?? "";
+    const src = m[2] ?? "";
     const isGif = rawAlt.startsWith("gif:");
     const alt = isGif ? rawAlt.slice(4) : rawAlt;
-
-    parts.push(
-      isGif ? (
-        <figure key={`gif-${match.index}`} className="my-3 rounded-2xl overflow-hidden border border-purple-500/20 shadow-lg shadow-purple-500/10 bg-zinc-950/40 max-w-[280px]">
-          <img
-            src={src}
-            alt={alt}
-            className="w-full rounded-t-2xl"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
-          />
-          <div className="px-3 py-1.5 text-[10px] text-zinc-500 flex items-center justify-between">
-            <span className="truncate">{alt}</span>
-            <span className="shrink-0 font-mono text-purple-400/60">GIF</span>
-          </div>
-        </figure>
-      ) : (
-        <figure key={`img-${match.index}`} className="my-3 rounded-xl overflow-hidden border border-white/10 shadow-lg shadow-purple-500/5">
-          <img
-            src={src}
-            alt={alt}
-            loading="lazy"
-            className="w-full max-h-72 object-cover"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
-          />
-          {alt && (
-            <figcaption className="px-3 py-2 text-[11px] text-zinc-400 bg-zinc-950/60 leading-relaxed">
-              {alt}
-            </figcaption>
-          )}
-        </figure>
-      )
-    );
-
-    lastIndex = match.index + match[0].length;
+    cards.push({
+      id: `img-${index++}`,
+      kind: isGif ? "gif" : "image",
+      title: alt || undefined,
+      imageUrl: src,
+      sourceUrl: src,
+      connection: activeConnection,
+      route: activeRoute,
+      privacy: activePrivacy,
+    });
+    imageSources.add(src);
   }
 
-  // Remaining text after last image
-  if (lastIndex < text.length) {
-    parts.push(...renderUrlsInText(text.slice(lastIndex), lastIndex));
+  const strippedImages = text.replace(imagePattern, " ");
+  const markdownLinks = [...strippedImages.matchAll(markdownLinkPattern)];
+  for (const m of markdownLinks) {
+    const label = (m[1] ?? "").trim();
+    const target = (m[2] ?? "").trim();
+    if (!target || imageSources.has(target) || !isLikelyImageLinkTarget(label, target)) {
+      continue;
+    }
+    const isGif = label.toLowerCase().includes("gif") || /\.gif(?:[?#].*)?$/i.test(target);
+    cards.push({
+      id: `img-link-${index++}`,
+      kind: isGif ? "gif" : "image",
+      title: label || undefined,
+      imageUrl: target,
+      sourceUrl: target,
+      connection: activeConnection,
+      route: activeRoute,
+      privacy: activePrivacy,
+    });
+    imageSources.add(target);
   }
 
-  return parts.length > 0 ? parts : [text];
+  const strippedMarkdownLinks = strippedImages.replace(markdownLinkPattern, " ");
+  const plainUrlMatches = [...strippedMarkdownLinks.matchAll(urlPattern)];
+  for (const m of plainUrlMatches) {
+    const raw = m[1] ?? "";
+    const href = raw.replace(/[.,;!?]+$/, "");
+    if (!href || imageSources.has(href) || !isLikelyPlainImageUrl(href)) {
+      continue;
+    }
+    const isGif = /\.gif(?:[?#].*)?$/i.test(href) || href.toLowerCase().includes("media.giphy.com");
+    cards.push({
+      id: `img-url-${index++}`,
+      kind: isGif ? "gif" : "image",
+      imageUrl: href,
+      sourceUrl: href,
+      connection: activeConnection,
+      route: activeRoute,
+      privacy: activePrivacy,
+    });
+    imageSources.add(href);
+  }
+
+  const hasMediaCard = imageSources.size > 0;
+  const toolMatches = [...strippedImages.matchAll(toolPattern)];
+  for (const m of toolMatches) {
+    const toolName = (m[1] ?? "").trim();
+    cards.push({
+      id: `tool-${index++}`,
+      kind: "tool",
+      title: toolName ? `Tool call: ${toolName}` : "Tool call",
+      toolName: toolName || undefined,
+      connection: activeConnection,
+      route: activeRoute,
+      privacy: activePrivacy,
+    });
+  }
+
+  // If we already have an image/GIF card, avoid extra web-source cards from attribution links.
+  if (hasMediaCard) {
+    return cards;
+  }
+
+  const strippedForUrls = strippedImages.replace(toolPattern, " ");
+  const seen = new Set<string>();
+  const urlMatches = [...strippedForUrls.matchAll(urlPattern)];
+  for (const m of urlMatches) {
+    const raw = m[1] ?? "";
+    const href = raw.replace(/[.,;!?]+$/, "");
+    if (!href || seen.has(href) || imageSources.has(href)) continue;
+    seen.add(href);
+    cards.push({
+      id: `web-${index++}`,
+      kind: "web",
+      title: "Web source",
+      sourceUrl: href,
+      connection: activeConnection,
+      route: activeRoute,
+      privacy: activePrivacy,
+    });
+  }
+
+  return cards;
+}
+
+function renderTextWithLinks(text: string) {
+  // Remove raw media markdown/image links from text body; cards render media separately.
+  const cleaned = text
+    .replace(imagePattern, "")
+    .replace(markdownLinkPattern, (full, label, target) => (
+      isLikelyImageLinkTarget(String(label ?? ""), String(target ?? "")) ? "" : full
+    ))
+    .replace(urlPattern, (full) => (isLikelyPlainImageUrl(String(full ?? "")) ? "" : full));
+  // Then handle plain URLs in remaining text fragments.
+  const parts: React.ReactNode[] = [];
+  parts.push(...renderUrlsInText(cleaned, 0));
+  return parts.length > 0 ? parts : [cleaned];
 }
 
 function renderUrlsInText(text: string, keyOffset: number): React.ReactNode[] {
@@ -108,7 +199,14 @@ function renderUrlsInText(text: string, keyOffset: number): React.ReactNode[] {
   });
 }
 
-export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, status }) => {
+export const TranscriptStream: React.FC<TranscriptStreamProps> = ({
+  messages,
+  status,
+  activeConnection,
+  activeRoute,
+  activePrivacy = "unknown",
+  activeAction = null,
+}) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -126,12 +224,21 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
 
   return (
     <div className="vokel-panel rounded-3xl p-5 sm:p-6 flex flex-col min-h-[360px] h-[52vh] max-h-[560px]">
-      <h2 className="text-lg sm:text-xl font-semibold text-zinc-100 mb-4 flex items-center justify-between border-b border-white/10 pb-3">
-        <span>Live Transcript</span>
-        <span className="text-xs bg-zinc-800 text-zinc-400 px-2 py-1 rounded-md font-mono uppercase">
-          {messages.length} Turn{messages.length !== 1 ? "s" : ""}
-        </span>
-      </h2>
+      <div className="mb-4 border-b border-white/10 pb-3">
+        <h2 className="flex items-center justify-between text-lg font-semibold text-zinc-100 sm:text-xl">
+          <span>Live Transcript</span>
+          <span className="rounded-md bg-zinc-800 px-2 py-1 font-mono text-xs uppercase text-zinc-400">
+            {messages.length} Turn{messages.length !== 1 ? "s" : ""}
+          </span>
+        </h2>
+        {activeAction && (
+          <div className="mt-3 flex items-center gap-2 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs font-mono text-blue-100">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-blue-300" />
+            <span className="truncate">{activeAction}</span>
+            <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-blue-300" />
+          </div>
+        )}
+      </div>
 
       <div
         ref={containerRef}
@@ -173,6 +280,10 @@ export const TranscriptStream: React.FC<TranscriptStreamProps> = ({ messages, st
                   <p className={msg.isPartial ? "italic animate-pulse whitespace-pre-wrap" : "whitespace-pre-wrap"}>
                     {renderTextWithLinks(msg.text)}
                   </p>
+                  {!isUser &&
+                    inferMediaCards(msg.text, activeConnection, activeRoute, activePrivacy).map((card) => (
+                      <TranscriptMediaCard key={`${msg.id}-${card.id}`} card={card} />
+                    ))}
                 </div>
               </div>
             );

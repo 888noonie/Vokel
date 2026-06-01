@@ -1,252 +1,233 @@
-# Phase 3 Implementation Plan
-
-**Status:** implemented and locked in (see `ROADMAP.md` Phase 3). This document
-remains the design record; verification steps still apply when changing the
-streaming path.
-
-This plan updates the earlier streaming-ASR sketch so it stays aligned with the
-current Vokel architecture, `AGENTS.md`, and the Phase 3 exit criteria in
-`ROADMAP.md`.
-
-## Goals
-
-- Reduce the waiting period after speech ends.
-- Preserve the existing conversation loop and cancellation behavior.
-- Keep microphone, model, and playback details out of `ConversationEngine`.
-- Add telemetry before deciding whether the extra complexity is worthwhile.
-
-## Non-Goals For This Slice
-
-- No echo-cancellation pipeline yet.
-- No always-open microphone during TTS playback.
-- No retrieval or LLM prefill triggered from partial transcripts yet.
-- No Android-specific work.
-
-## Architectural Constraints
-
-1. `ConversationEngine` remains unaware of microphone hardware, streaming
-   recognizer internals, and audio callback details.
-2. ASR continues to sit behind the `AsrEngine` protocol for completed-turn
-   transcription compatibility.
-3. Streaming capture logic lives in the audio layer, exposed through a
-   `TurnProducer`.
-4. Every capture path remains cancellable and measurable.
-5. Audio capture settings come from named audio profiles, not ad-hoc CLI tuning.
-
-## Proposed Design
-
-### 1. Keep `ConversationEngine.run_turns()` unchanged
-
-Do not add `run_streaming_turns()` or any streaming-specific method to
-`engine.py`.
-
-The existing loop already has the right contract:
-
-- `producer.next_turn()` returns an `AudioTurn`
-- `asr.transcribe(turn)` produces the final transcript
-- `submit_turn()` handles generation and playback
-
-Phase 3 should plug into that loop by swapping the producer and, when useful,
-the ASR implementation.
-
-### 2. Add a streaming turn producer in the audio layer
-
-Introduce a `StreamingTurnProducer` in `src/vokel/audio.py` that implements the
-existing `TurnProducer` protocol.
-
-Responsibilities:
-
-- open and close the microphone stream for one turn
-- feed frames into streaming ASR
-- accumulate raw samples for traceability and offline fallback
-- emit telemetry for partial and stable transcript milestones
-- detect endpoint completion
-- return a finalized `AudioTurn`
-
-This keeps streaming mechanics close to the microphone and recognizer code
-instead of leaking them into the engine.
-
-### 3. Keep transcript stability heuristics in the producer
-
-The stability timer belongs in `StreamingTurnProducer`, not in
-`ConversationEngine`.
-
-Initial heuristic:
-
-- mark `partial_transcript` whenever decoded text changes
-- mark `stable_transcript` after the text remains unchanged for about `600 ms`
-- if endpoint fires before the stability timer does, mark
-  `stable_transcript` with the last partial result before returning
-
-This is explicitly a measurement tool for Phase 3, not a final product policy.
-
-### 4. Use a dual-mode streaming ASR adapter
-
-Add `SherpaOnlineAsr` with two entry points:
-
-- `create_stream()` for incremental decoding
-- `transcribe(AudioTurn)` for compatibility with the existing `AsrEngine`
-  contract and current tests
-
-That preserves the current turn-based path while enabling the streaming
-producer to decode incrementally.
-
-### 5. Wrap recognizer and stream together
-
-If we keep a `SherpaOnlineStream` wrapper, it should hold both:
-
-- the underlying `sherpa_onnx.OnlineRecognizer`
-- the created `OnlineStream`
-
-The wrapper should own the combined operations callers actually need:
-
-- `accept_waveform(...)`
-- `decode()`
-- `get_result()`
-- `is_endpoint()`
-- `reset()` if required by the recognizer lifecycle
-
-The caller should not have to juggle the recognizer and stream separately.
-
-### 6. Use audio profiles as the source of microphone settings
-
-`AsynchronousMicStream` should be configured from the active `AudioProfile`
-through its `MicVadConfig`, not from a parallel set of streaming-only CLI
-flags.
-
-At minimum the streaming path should inherit:
-
-- `device`
-- `sample_rate`
-- `read_seconds`
-- `input_gain`
-- `remove_dc_offset`
-
-This keeps the desktop baseline consistent with the existing
-`laptop-mic-headphones` recommendation.
-
-### 7. Keep playback behavior simple for Phase 3
-
-For this phase, keep the same turn boundary as the current desktop loop:
-
-- microphone capture is active during user speech
-- once a turn is finalized and submitted, the mic is closed during playback
-
-This avoids pretending we solved echo handling before we actually have. The
-open decision about barge-in while TTS is playing remains in `ROADMAP.md`.
-
-## CLI And Config Shape
-
-### Model selection
-
-Prefer a single directory flag for the streaming model, for example:
-
-- `--streaming-asr-dir models/sherpa-onnx-streaming-zipformer-en-2023-06-26`
-
-Infer these files from that directory:
-
-- `tokens.txt`
-- `encoder*.onnx`
-- `decoder*.onnx`
-- `joiner*.onnx`
-
-Avoid adding four separate path flags for one bundled model archive unless a
-later need makes it unavoidable.
-
-### Suggested flags
-
-- `--audio-profile`
-- `--streaming-asr-dir`
-- `--asr-provider`
-- optional `--streaming-asr` boolean to select the producer explicitly during
-  evaluation
-
-Keep the flag surface small while Phase 3 is still being measured.
-
-## Model Download Work
-
-Add the streaming Zipformer asset to `scripts/download_models.py` using the
-existing safe archive extraction path.
-
-Acceptance notes:
-
-- model extracts under `models/`
-- `models/` remains ignored by git
-- the downloaded directory layout is compatible with `--streaming-asr-dir`
-
-## Telemetry Work
-
-Add Phase 3 trace events before optimizing:
-
-- `partial_transcript`
-- `stable_transcript`
-
-Use them to report:
-
-- `capture_to_first_partial_ms`
-- `capture_to_stable_ms`
-- `capture_to_first_token_ms`
-
-Do not remove the existing turn-level metrics. Phase 3 success depends on
-comparing the streaming path against the Phase 1 and Phase 2 baseline numbers.
-
-## Implementation Steps
-
-1. Extend model download support for the streaming Zipformer archive.
-2. Add `SherpaOnlineAsrConfig` and `SherpaOnlineAsr`.
-3. Add a thin `SherpaOnlineStream` helper that owns recognizer-plus-stream
-   operations.
-4. Add `AsynchronousMicStream` as an async context manager that bridges the
-   sounddevice callback thread into the event loop with
-   `call_soon_threadsafe(...)`.
-5. Add `StreamingTurnProducer` that uses `AsynchronousMicStream`,
-   `SherpaOnlineAsr`, and `LatencyTrace`.
-6. Wire CLI/config setup so the streaming producer consumes the selected
-   `AudioProfile`.
-7. Keep `ConversationEngine.run_turns()` unchanged and exercise the new
-   producer through the existing engine loop.
-8. Add or update tests for:
-   - online ASR adapter construction and file validation
-   - transcript stability telemetry
-   - producer endpoint completion
-   - backward compatibility of `transcribe(AudioTurn)`
-9. Measure latency and compare with the current baseline before deciding
-   whether to keep the new path.
+# Implementation Plan
+
+**Status:** active, foundation-aligned (May 2026).
+
+This plan translates the current direction in `ROADMAP.md` and
+`docs/foundation-direction.md` into small, measurable implementation slices.
+
+Product invariant:
+
+> You speak. It answers. You interrupt. It stops. It listens again.
+
+The plan below protects that loop while making backend routing and trust state
+clear.
+
+## Scope For This Cycle
+
+1. Connection-first UX language (`Connections`, not profiles).
+2. First-class connection types: `lm_studio` and `hermes` only.
+3. Visible route/tool-ownership/consent state at all times.
+4. Stable Media Card primitive for web/image/gif/tool/context/consent output.
+5. Pause/resume/hold voice control before larger context-input features.
+
+## Non-Goals (Now)
+
+- No new backend families beyond LM Studio and Hermes.
+- No duplication of Hermes-owned tools in Vokel.
+- No cross-device card sharing.
+- No large memory-v2 or vector retrieval expansion.
+
+## Architecture Boundaries (Must Hold)
+
+1. Vokel owns capture, playback, interruption, routing display, consent, and audit.
+2. LM Studio/Hermes own model identity, reasoning, and their own memory/tool stacks.
+3. All streams remain cancellable.
+4. TTS output always passes through `sanitize_for_speech`.
+
+## Work Slices
+
+## Completed Foundation Slices
+
+- Slice A complete: Connections language is user-facing across dashboard/session surfaces.
+- Slice B complete: compact + expandable Trust State surface is live.
+- Slice C complete: MediaCard V1 transcript primitive is in place for `web` / `image` / `gif` / `tool`.
+- Media hardening complete:
+  - prevent media hijack
+  - remove duplicate markdown + card rendering paths
+  - transparent fallback when forced media returns no displayable URL
+  - resilient search/image/GIF failure handling (retry + classified user-facing fallbacks)
+- Slice D complete: pause/resume/hold controls are wired and visible.
+- Ambiguous filler utterance guard complete: tiny/noisy filler inputs are ignored (no tool/LLM churn).
+
+### Slice A: Connection Model And Naming Lock
+
+Outcome:
+- UI and API consistently expose `Connection` language and explicit route state.
+
+Code areas:
+- `frontend/src/App.tsx`
+- `frontend/src/components/AgentConsole.tsx`
+- `src/vokel/web.py`
+- `src/vokel/agent_backend.py`
+- `src/vokel/engine.py`
+
+Tasks:
+- Replace user-facing "mode/profile" phrasing with "Connection" labels.
+- Standardize connection payload shape in websocket messages:
+  - `connection_type`: `lm_studio | hermes`
+  - `route`: `local | external`
+  - `tools_owner`: `vokel | hermes`
+  - `interrupt_available`: `bool`
+- Keep Hermes WebSocket auto-selection behavior for `ws://` endpoints.
+- Ensure transcript/header badges reflect active connection and route.
+
+Exit checks:
+- User can switch between LM Studio and Hermes via one selector.
+- Switching is visible and reversible.
+- No backend/tool ownership ambiguity in UI copy.
+
+### Slice B: Trust State Surface (Calm Default + Expandable Detail)
+
+Outcome:
+- Calm status line always visible; deeper routing details collapsible.
+
+Code areas:
+- `frontend/src/App.tsx`
+- `frontend/src/components/TranscriptStream.tsx`
+- `frontend/src/components/AgentConsole.tsx`
+- `src/vokel/web.py`
+
+Tasks:
+- Add a compact connection state banner:
+  - Connected to
+  - Route (local/external)
+  - Voice path (local TTS)
+  - Tools owner
+  - Interrupt availability
+  - Consent state
+- Add expandable details panel for gateway/session diagnostics.
+- Keep state updates event-driven from server status messages.
+
+Exit checks:
+- User can answer "what am I connected to?" in under 2 seconds.
+- Expanded panel shows full trust truth without cluttering default view.
+
+### Slice C: Media Card V1 Primitive
+
+Outcome:
+- One internal card shape powers web/image/gif/tool/context/consent outputs.
+
+Code areas:
+- `frontend/src/App.tsx`
+- `frontend/src/components` (card renderer + actions)
+- `src/vokel/media_formatter.py`
+- `src/vokel/web.py`
+
+Tasks:
+- Define shared `MediaCard` schema in frontend types aligned to foundation note.
+- Map existing tool outputs into card objects with route + privacy badges.
+- Support card actions (safe first set):
+  - Expand
+  - Save
+  - Hide
+  - Tag
+  - Use as Context
+- Ensure any speechable caption uses sanitized text only.
+
+Exit checks:
+- Web/image/gif/tool outputs render as consistent cards.
+- Every card clearly shows source + route + privacy state.
+
+### Slice D: Pause/Resume/Hold Voice Controls
+
+Outcome:
+- Voice and control path supports pause/resume/hold reliably before bigger context features.
+
+Code areas:
+- `src/vokel/web.py`
+- `frontend/src/App.tsx`
+- `frontend/src/components/WaveformVisualizer.tsx`
+- `src/vokel/engine.py`
+
+Tasks:
+- Harden existing `pause_session` / `resume_session` command handling.
+- Add phrase handling for: `pause`, `hold on`, `wait`, `continue`.
+- Ensure pause blocks auto-followups and turn submission safely.
+- Keep interruption correctness ahead of any latency tuning.
+
+Exit checks:
+- "pause" halts active stream cleanly.
+- "continue" resumes with visible state change.
+- Barge-in behavior remains correct while paused/resumed.
+
+### Slice E: Consent + Tool Ownership Clarity
+
+Outcome:
+- Consent state is explicit; Hermes mode never implies Vokel tool execution.
+
+Code areas:
+- `src/vokel/web.py`
+- `src/vokel/tools.py`
+- `frontend/src/App.tsx`
+- `frontend/src/components/AgentConsole.tsx`
+- `docs/agent-tools.md`
+
+Tasks:
+- Keep execute consent cues/banners visible in dashboard + console.
+- In Hermes connection, show tools as Hermes-owned and disable local forced tools.
+- In LM Studio connection, keep Vokel ToolRegistry path available.
+- Add/refresh docs language for ownership boundary.
+
+Exit checks:
+- No UI path suggests Hermes tools run inside Vokel.
+- Consent armed/cancel state is visible and auditable.
 
 ## Verification Plan
 
-Required:
+Required before publishing:
 
-- `python3 -m pytest -q`
-- one local streaming-ASR smoke run with latency output
+- `.venv/bin/python -m pytest -q`
+- Web dashboard smoke run with both connections:
+  - LM Studio route
+  - Hermes route (HTTP and ws:// where available)
 
-Check against the Phase 3 exit criteria in `ROADMAP.md`:
+Environment note:
 
-1. transcript appears incrementally
-2. `capture_to_first_token_ms` improves relative to the current desktop
-   baseline, or we explicitly reject the added complexity
+- Treat `.venv/bin/python -m pytest -q` as the authoritative verification command for this repo.
+- Avoid bare `python3 -m pytest -q` unless the venv is activated or dependencies are installed into that interpreter.
 
-Recommended comparison table for the smoke run:
+Manual checks (must pass):
 
-- baseline `capture_to_first_token_ms`
-- streaming `capture_to_first_partial_ms`
-- streaming `capture_to_stable_ms`
-- streaming `capture_to_first_token_ms`
-- notes on recognition quality and endpoint behavior
+1. Start in LM Studio, speak one turn, interrupt mid-response.
+2. Switch to Hermes, verify route/tool ownership badges update.
+3. Pause during active session, confirm status + scheduler behavior.
+4. Resume and complete another turn.
+5. Trigger tool/media output and verify Media Card route/privacy labels.
+6. Confirm spoken output never reads raw markdown/URLs.
 
-## Explicit Rejection Criteria
+Current verification snapshot:
 
-We should be willing to stop or revert the streaming path if any of these are
-true after measurement:
+- `.venv/bin/python -m pytest -q`
+- `82 passed`
 
-- interruption correctness regresses
-- endpointing becomes unreliable
-- first-token latency does not improve enough to justify the complexity
-- the streaming path forces engine-level coupling to audio or model details
+Current known limitation:
 
-## Open Follow-Up After Phase 3
+- Spoken pause/resume interception is implemented for browser-audio websocket mode.
+- Local hardware mode still relies on existing controls and does not yet intercept spoken commands in `run_turns`.
 
-- Whether partial transcripts should drive retrieval or LLM prefill
-- Whether the mic should remain open during playback for true barge-in
-- Echo handling for playback-over-mic scenarios
-- Whether the streaming model quality is acceptable compared with offline ASR
+## Suggested Delivery Order
+
+1. Slice A (naming/model lock)
+2. Slice B (trust surface)
+3. Slice D (pause/resume hardening)
+4. Slice C (Media Card primitive)
+5. Slice E (consent/tool-ownership polish)
+
+## Risks And Guardrails
+
+- Risk: UX rename churn breaks existing state wiring.
+  - Guardrail: keep wire protocol changes additive, then remove old fields after UI migration.
+- Risk: pause/resume races with async generation tasks.
+  - Guardrail: cancel/guard at server boundary first (`web.py`) before UI actions.
+- Risk: Media Card rollout fragments rendering paths.
+  - Guardrail: funnel all tool/media rendering through one normalization step.
+
+## Done Definition
+
+This cycle is done when:
+
+- Connection language and state are consistent across dashboard + transcript.
+- LM Studio and Hermes are the only first-class connection types surfaced.
+- Tool ownership and consent state are always visible.
+- Media outputs use one stable card shape with safe first actions.
+- Pause/resume/hold works reliably without regressing interruption correctness.

@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 from contextlib import suppress
 from typing import Literal
 
-from .agent_backend import AgentBackend
+from .agent_backend import AgentBackend, TOOL_ACTIVITY_REPORTING_CONTRACT
 from .config import VoiceLoopConfig
-from .events import TextDeltaEvent, ToolCallEvent
+from .events import TextDeltaEvent, ToolActivityEvent, ToolCallEvent
 from .hermes_client import HermesAgentClient
 from .inference import ChatMessage
 from .memory import MemoryConfig, MemoryStore, NullMemoryStore, build_memory_context
@@ -21,6 +22,13 @@ from .turns import AsrEngine, TurnProducer
 
 
 AgentMode = Literal["builtin", "hermes"]
+MEDIA_MARKDOWN_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)]+)\)")
+TOOL_CALL_MARKER_RE = re.compile(r"\[tool_call:([^\]]+)\]")
+SERIALIZED_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call\>\s*call:([A-Za-z0-9_.:-]+)(?:\{.*?\})?\s*<tool_call\|>",
+    re.DOTALL,
+)
+_PUNCT_ONLY_RE = re.compile(r"^[\s\.\,\!\?\:\;\-\_~…·。！？、]+$")
 
 
 class ConversationEngine:
@@ -61,6 +69,25 @@ class ConversationEngine:
         self._playback_worker: asyncio.Task[None] | None = None
         self._suppress_memory_write = False
 
+    async def _handle_tool_markers(
+        self,
+        token: str,
+        reassured_tools: set[str],
+        *,
+        queue_reassurance: bool,
+    ) -> str:
+        marker_names = TOOL_CALL_MARKER_RE.findall(token)
+        marker_names.extend(SERIALIZED_TOOL_CALL_RE.findall(token))
+        for tool_name in marker_names:
+            self.trace.mark("tool_call_text_suppressed", tool_name=tool_name)
+            if queue_reassurance and tool_name not in reassured_tools:
+                reassured_tools.add(tool_name)
+                self.trace.mark("tool_call_started", tool_name=tool_name)
+                await self._queue_tool_reassurance(tool_name)
+        token = TOOL_CALL_MARKER_RE.sub("", token)
+        token = SERIALIZED_TOOL_CALL_RE.sub("", token)
+        return token
+
     async def start(self) -> None:
         if self._playback_worker is None or self._playback_worker.done():
             self._playback_worker = asyncio.create_task(self._run_playback())
@@ -86,6 +113,11 @@ class ConversationEngine:
         self.trace.mark("conversation_reset")
 
     async def submit_turn(self, user_text: str, reset_trace: bool = True) -> None:
+        if self._is_ambiguous_filler_utterance(user_text):
+            if reset_trace:
+                self.trace.reset()
+            self.trace.mark("utterance_ignored", reason="ambiguous_filler", text=user_text)
+            return
         await self.interrupt()
         if reset_trace:
             self.trace.reset()
@@ -172,6 +204,7 @@ class ConversationEngine:
         assistant_text: list[str] = []
         saw_token = False
         saw_phrase = False
+        reassured_tools: set[str] = set()
 
         self.trace.mark("generation_started")
 
@@ -190,6 +223,13 @@ class ConversationEngine:
                 ):
                     if isinstance(event, TextDeltaEvent):
                         token = event.content
+                        token = await self._handle_tool_markers(
+                            token,
+                            reassured_tools,
+                            queue_reassurance=self.agent_mode == "hermes",
+                        )
+                        if not token:
+                            continue
                         if not saw_token:
                             self.trace.mark("first_token")
                             saw_token = True
@@ -201,8 +241,17 @@ class ConversationEngine:
                 if not spoken or len(spoken) < 5:
                     spoken = "Here you go!"
 
-                # Transcript gets media markdown + caption; TTS only gets the caption
-                full_reply = f"{media_result}\n\n{spoken}"
+                media_block = self._first_media_markdown_block(media_result)
+                if media_block:
+                    # Transcript gets media markdown + caption; TTS only gets the caption.
+                    full_reply = f"{media_result}\n\n{spoken}"
+                else:
+                    # Transparent fallback: never claim media was shown when no renderable block exists.
+                    full_reply = (
+                        "I tried to fetch that media, but no displayable image or GIF URL was returned. "
+                        "Want me to try again with a different query?"
+                    )
+                    spoken = full_reply
                 for phrase in chunker.push(spoken):
                     if not saw_phrase:
                         self.trace.mark("first_phrase_queued", chars=len(phrase))
@@ -271,17 +320,31 @@ class ConversationEngine:
                 async for event in self.agent.stream_chat(messages, tools):
                     if isinstance(event, TextDeltaEvent):
                         token = event.content
+                        token = await self._handle_tool_markers(
+                            token,
+                            reassured_tools,
+                            queue_reassurance=self.agent_mode == "hermes",
+                        )
+                        if not token:
+                            continue
                         if not saw_token:
                             self.trace.mark("first_token")
                             saw_token = True
                         if self.echo_tokens:
                             print(token, end="", flush=True)
                         assistant_text.append(token)
+                        if self.agent_mode == "hermes":
+                            continue
                         for phrase in chunker.push(token):
                             if not saw_phrase:
                                 self.trace.mark("first_phrase_queued", chars=len(phrase))
                                 saw_phrase = True
                             await self._playback_queue.put(phrase)
+                    elif isinstance(event, ToolActivityEvent):
+                        if event.name not in reassured_tools:
+                            reassured_tools.add(event.name)
+                            self.trace.mark("tool_call_started", tool_name=event.name)
+                            await self._queue_tool_reassurance(event.name)
                     elif isinstance(event, ToolCallEvent):
                         tool_calls_made.append(event)
                 
@@ -304,6 +367,7 @@ class ConversationEngine:
                     if self.tool_registry:
                         for tc in tool_calls_made:
                             self.trace.mark("tool_call_started", tool_name=tc.name)
+                            await self._queue_tool_reassurance(tc.name)
                             result = await self.tool_registry.execute(tc)
                             self.history.append({
                                 "role": "tool",
@@ -321,6 +385,15 @@ class ConversationEngine:
                     assistant_text = []
                 else:
                     break
+
+            if self.agent_mode == "hermes" and assistant_text:
+                phrase = "".join(assistant_text).strip()
+                if phrase:
+                    if not saw_phrase:
+                        self.trace.mark("first_phrase_queued", chars=len(phrase))
+                        saw_phrase = True
+                    await self._playback_queue.put(phrase)
+                chunker.reset()
 
             final_phrase = chunker.flush()
             if final_phrase:
@@ -342,6 +415,43 @@ class ConversationEngine:
             self.trace.mark("generation_cancelled")
             raise
 
+    @staticmethod
+    def _first_media_markdown_block(text: str) -> str | None:
+        match = MEDIA_MARKDOWN_RE.search(text or "")
+        if not match:
+            return None
+        return match.group(0)
+
+    @staticmethod
+    def _is_ambiguous_filler_utterance(user_text: str) -> bool:
+        text = (user_text or "").strip()
+        if not text:
+            return True
+        if _PUNCT_ONLY_RE.fullmatch(text):
+            return True
+
+        normalized = " ".join(text.lower().split())
+        filler_tokens = {
+            "um",
+            "uh",
+            "hmm",
+            "mmm",
+            "mm",
+            "umm",
+            "uhh",
+            "erm",
+            "huh",
+            "eh",
+            "嗯",
+            "嗯嗯",
+            "呃",
+            "啊",
+        }
+        tokens = normalized.split()
+        if tokens and all(token in filler_tokens for token in tokens):
+            return True
+        return False
+
     def _recent_history_mentions_gif(self) -> bool:
         """Check if the last few conversation turns were about GIFs."""
         gif_words = ("gif", "giphy", "reaction gif", "meme", "sticker")
@@ -350,6 +460,29 @@ class ConversationEngine:
             if any(w in content for w in gif_words):
                 return True
         return False
+
+    @staticmethod
+    def _looks_like_media_followup(user_text: str) -> bool:
+        """Only treat short follow-ups as media requests when intent is still obvious."""
+        text = user_text.strip().lower()
+        if not text:
+            return False
+        # Direct media words still count as clear intent.
+        media_words = ("gif", "image", "picture", "photo", "meme", "sticker")
+        if any(word in text for word in media_words):
+            return True
+        # Lightweight "another one like that" style follow-ups.
+        followup_phrases = (
+            "another",
+            "one like",
+            "like that",
+            "like this",
+            "more like",
+            "same vibe",
+            "same style",
+            "same energy",
+        )
+        return any(phrase in text for phrase in followup_phrases)
 
     async def _maybe_run_required_gif_search(self, user_text: str) -> str:
         if "search_gif" not in self.enabled_tools:
@@ -379,6 +512,7 @@ class ConversationEngine:
             not explicit_match
             and self._recent_history_mentions_gif()
             and len(user_text.split()) <= 8
+            and self._looks_like_media_followup(user_text)
         )
 
         if not explicit_match and not context_match:
@@ -416,6 +550,7 @@ class ConversationEngine:
             query = query[:60].rsplit(" ", 1)[0]
 
         self.trace.mark("tool_call_forced", tool_name="search_gif")
+        await self._queue_tool_reassurance("search_gif")
         tool_call = ToolCallEvent(
             call_id="forced_search_gif",
             name="search_gif",
@@ -484,6 +619,7 @@ class ConversationEngine:
             not explicit_match
             and self._recent_history_mentions_image()
             and len(user_text.split()) <= 8
+            and self._looks_like_media_followup(user_text)
         )
 
         if not explicit_match and not context_match:
@@ -524,6 +660,7 @@ class ConversationEngine:
             query = query[:60].rsplit(" ", 1)[0]
 
         self.trace.mark("tool_call_forced", tool_name="search_image")
+        await self._queue_tool_reassurance("search_image")
         tool_call = ToolCallEvent(
             call_id="forced_search_image",
             name="search_image",
@@ -557,24 +694,11 @@ class ConversationEngine:
         if not self.tool_registry or not self.tool_registry.get_tool("search_web"):
             return ""
 
-        normalized = user_text.lower()
-        requires_search = any(
-            keyword in normalized
-            for keyword in (
-                "search",
-                "web",
-                "news",
-                "today",
-                "latest",
-                "current",
-                "breaking",
-                "real-time",
-            )
-        )
-        if not requires_search:
+        if not self._should_force_web_search(user_text):
             return ""
 
         self.trace.mark("tool_call_forced", tool_name="search_web")
+        await self._queue_tool_reassurance("search_web")
         tool_call = ToolCallEvent(
             call_id="forced_search_web",
             name="search_web",
@@ -607,6 +731,83 @@ class ConversationEngine:
         )
         self.trace.mark("tool_call_finished", tool_name="search_web", chars=len(result))
         return result
+
+    async def _queue_tool_reassurance(self, tool_name: str) -> None:
+        phrase_by_tool = {
+            "search_web": "I'm searching now.",
+            "search_image": "I'm fetching that image now.",
+            "search_gif": "I'm fetching that GIF now.",
+        }
+        phrase = phrase_by_tool.get(tool_name, "I'm using that tool now.")
+        self.trace.mark("tool_reassurance_queued", tool_name=tool_name, chars=len(phrase))
+        await self._playback_queue.put(phrase)
+
+    @staticmethod
+    def _should_force_web_search(user_text: str) -> bool:
+        normalized = " ".join(user_text.lower().split())
+        if not normalized:
+            return False
+
+        explicit_lookup_phrases = (
+            "search the web for",
+            "search web for",
+            "search for",
+            "look up",
+            "find me information about",
+            "find information about",
+            "find me info about",
+            "look up current",
+            "search latest",
+            "latest on",
+        )
+        if any(phrase in normalized for phrase in explicit_lookup_phrases):
+            return True
+
+        meta_or_planning_phrases = (
+            "i'm going to",
+            "i am going to",
+            "we can",
+            "we should",
+            "worked well",
+            "work well",
+            "improve",
+            "later",
+            "soon",
+            "set up the api",
+            "setup the api",
+            "enhance",
+            "future plan",
+            "next step",
+        )
+        if any(phrase in normalized for phrase in meta_or_planning_phrases):
+            return False
+
+        is_question = (
+            "?" in user_text
+            or normalized.startswith(("what", "who", "when", "where", "why", "how"))
+        )
+        current_info_cues = (
+            "latest",
+            "current",
+            "today",
+            "news",
+            "weather",
+            "breaking",
+            "real-time",
+            "recent",
+            "headline",
+            "headlines",
+        )
+        has_current_info_cue = any(cue in normalized for cue in current_info_cues)
+        if is_question and has_current_info_cue:
+            return True
+
+        words = normalized.split()
+        if len(words) <= 10 and has_current_info_cue and not normalized.startswith(
+            ("i ", "we ", "that ", "this ", "it ")
+        ):
+            return True
+        return False
 
     def _messages_for_web_synthesis(
         self,
@@ -658,13 +859,13 @@ class ConversationEngine:
                 "role": "system",
                 "content": (
                     "A GIF was just fetched for the user. Your job is to give a SHORT, "
-                    "fun, playful spoken response (1 sentence max). Rules:\n"
+                    "fun, playful spoken response (1-2 short sentences). Rules:\n"
                     "- React like a friend sharing a funny GIF: 'Ha! Check this out!' or "
                     "'This one's perfect!' or 'Oh this is so good.'\n"
                     "- Match the energy of the GIF topic.\n"
                     "- DO NOT read out URLs, titles, or attribution text.\n"
                     "- DO NOT describe what happens in the GIF frame by frame.\n"
-                    "- Keep it to one short, expressive sentence."
+                    "- Keep it brief and expressive, but do not sound abruptly cut off."
                 ),
             })
         else:
@@ -672,7 +873,7 @@ class ConversationEngine:
                 "role": "system",
                 "content": (
                     "An image was just fetched for the user. Your job is to give a SHORT, "
-                    "warm, spoken response (1-2 sentences max). Rules:\n"
+                    "warm, spoken response (1-2 short sentences). Rules:\n"
                     "- Say something brief like 'Here's a beautiful shot of X for you' or "
                     "'I found this lovely image of X'.\n"
                     "- DO NOT read out URLs, photographer names, or attribution text.\n"
@@ -782,7 +983,10 @@ class ConversationEngine:
 
     def _messages_for_generation(self, memory_context: str, user_text: str) -> list[ChatMessage]:
         if self.agent_mode == "hermes":
-            return [{"role": "user", "content": user_text}]
+            return [
+                {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT},
+                {"role": "user", "content": user_text},
+            ]
 
         if not memory_context:
             messages = list(self.history)
@@ -798,7 +1002,8 @@ class ConversationEngine:
                 instruction = (
                     f"You have access to the following tools: {tool_names}. "
                     "You MUST use these tools when the user asks for real-time information, web searches, or news. "
-                    "DO NOT pretend or hallucinate search results. You MUST call the tool."
+                    "DO NOT pretend or hallucinate search results. You MUST call the tool. "
+                    f"{TOOL_ACTIVITY_REPORTING_CONTRACT}"
                 )
                 messages.insert(1, {"role": "system", "content": instruction})
                 

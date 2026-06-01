@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import httpx
 
 from .tools import ToolDefinition
@@ -7,6 +8,17 @@ from .tools import ToolDefinition
 UNSPLASH_ACCESS_KEY = "vF-5RKDX3tFdMmT2f2Vx7bCz0bFMlr_H6OmQsOD6HIw"
 
 _UNSPLASH_SEARCH_URL = "https://api.unsplash.com/search/photos"
+_UNSPLASH_TIMEOUT = 8.0
+_UNSPLASH_ATTEMPTS = 3
+
+
+def _rate_limit_message(retry_after: str | None) -> str:
+    if retry_after and retry_after.isdigit():
+        return (
+            "Image search is temporarily rate-limited. "
+            f"Please try again in about {retry_after} seconds."
+        )
+    return "Image search is temporarily rate-limited. Please try again shortly."
 
 
 async def search_unsplash(query: str) -> str:
@@ -20,13 +32,38 @@ async def search_unsplash(query: str) -> str:
         "per_page": "1",
         "orientation": "landscape",
     }
-    async with httpx.AsyncClient(timeout=8.0) as client:
-        try:
-            resp = await client.get(_UNSPLASH_SEARCH_URL, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            return f"Image search failed: {e}"
+    async with httpx.AsyncClient(timeout=_UNSPLASH_TIMEOUT) as client:
+        data: dict[str, object] | None = None
+        for attempt in range(1, _UNSPLASH_ATTEMPTS + 1):
+            try:
+                resp = await client.get(_UNSPLASH_SEARCH_URL, headers=headers, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status == 429:
+                    retry_after = exc.response.headers.get("Retry-After")
+                    return _rate_limit_message(retry_after)
+                if status >= 500 and attempt < _UNSPLASH_ATTEMPTS:
+                    await asyncio.sleep(0.25 * attempt)
+                    continue
+                return f"Image search failed (HTTP {status}). Please try again."
+            except httpx.TimeoutException:
+                if attempt < _UNSPLASH_ATTEMPTS:
+                    await asyncio.sleep(0.25 * attempt)
+                    continue
+                return "Image search timed out. Please try again."
+            except httpx.RequestError:
+                if attempt < _UNSPLASH_ATTEMPTS:
+                    await asyncio.sleep(0.25 * attempt)
+                    continue
+                return "Image search is temporarily unavailable due to a network issue."
+            except Exception:
+                return "Image search failed unexpectedly. Please try again."
+
+        if data is None:
+            return "Image search failed. Please try again."
 
     results = data.get("results") or []
     if not results:

@@ -23,6 +23,7 @@ import {
   Bot,
   Volume2,
   VolumeX,
+  Loader2,
 } from "lucide-react";
 import { LatencyScoreboard } from "./components/LatencyScoreboard";
 import { WaveformVisualizer } from "./components/WaveformVisualizer";
@@ -111,6 +112,7 @@ function App() {
     loadJson<ChatSnapshot[]>(previousChatsKey, [])
   );
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
+  const [activeToolName, setActiveToolName] = useState<string | null>(null);
   const [executeState, setExecuteState] = useState<ExecuteState>({
     armed: false,
     risk: "none",
@@ -276,6 +278,7 @@ function App() {
       setIsSessionActive(false);
       setStatus("idle");
       setIsPaused(false);
+      setActiveToolName(null);
       setExecuteState({ armed: false, risk: "none", detail: "idle" });
       void stopToolCue(false);
       stopVoicePreview();
@@ -334,6 +337,7 @@ function App() {
             setIsSessionActive(true);
             setIsPaused(false);
             setStatus("listening");
+            setActiveToolName(null);
             if (typeof data.hermes_session_id === "string") {
               setActiveHermesSessionId(data.hermes_session_id);
               if (!hermesSessionId.trim()) {
@@ -351,6 +355,7 @@ function App() {
             setIsSessionActive(false);
             setStatus("idle");
             setIsPaused(false);
+            setActiveToolName(null);
             setActiveHermesSessionId(null);
             setExecuteState({ armed: false, risk: "none", detail: "idle" });
             void stopToolCue(false);
@@ -476,11 +481,19 @@ function App() {
 
           case "playback_stop":
             // Trigger browser-side player queue clearance (handled automatically inside useAudioStreamer)
+            setActiveToolName(null);
             void stopToolCue(false);
             break;
 
           case "telemetry":
-            if (data.event === "tool_call_forced" || data.event === "tool_call_started") {
+            if (
+              data.event === "tool_call_forced" ||
+              data.event === "tool_call_started" ||
+              data.event === "tool_reassurance_queued"
+            ) {
+              const fields = data.fields && typeof data.fields === "object" ? data.fields : {};
+              const toolName = typeof fields.tool_name === "string" ? fields.tool_name : null;
+              setActiveToolName(toolName);
               void startToolCue();
             }
             if (
@@ -489,6 +502,7 @@ function App() {
               data.event === "generation_finished" ||
               data.event === "generation_cancelled"
             ) {
+              setActiveToolName(null);
               void stopToolCue();
             }
             break;
@@ -515,6 +529,7 @@ function App() {
     setMessages([]);
     setMetrics({});
     setAgentEvents([]);
+    setActiveToolName(null);
     setExecuteState({ armed: false, risk: "none", detail: "idle" });
     setError(null);
 
@@ -548,6 +563,7 @@ function App() {
   const handleStopSession = () => {
     if (!socketRef.current || !isConnected) return;
     persistCurrentChat();
+    setActiveToolName(null);
 
     socketRef.current.send(
       JSON.stringify({
@@ -558,6 +574,7 @@ function App() {
 
   const handleInterrupt = () => {
     if (!socketRef.current || !isConnected) return;
+    setActiveToolName(null);
 
     socketRef.current.send(
       JSON.stringify({
@@ -747,6 +764,42 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
+  const activeConnectionLabel = agentBackend === "hermes" ? "Hermes" : "LM Studio";
+  const routeLabel = agentBackend === "hermes" ? "External agent" : "Local model";
+  const toolsOwnerLabel = agentBackend === "hermes" ? "Hermes-owned" : "Vokel-owned";
+  const privacyLabel = agentBackend === "hermes" ? "External agent active" : "Local";
+  const voiceLabel =
+    playbackBackend === "kokoro"
+      ? `Local Kokoro (${voice})`
+      : playbackBackend === "spd-say"
+        ? "Local Speech Dispatcher"
+        : "Local Console";
+  const interruptLabel = isConnected && isSessionActive ? "Available" : "Not available";
+  const consentLabel = executeState.armed
+    ? "Armed"
+    : executeState.risk !== "none"
+      ? "Required"
+      : "Not armed";
+  const trustSummary = `${activeConnectionLabel} • ${routeLabel} • ${interruptLabel}`;
+  const sessionStateLabel = isPaused
+    ? "paused"
+    : isSessionActive
+      ? status
+      : "idle";
+  const activeActionLabel = activeToolName
+    ? activeToolName === "search_web"
+      ? "Searching the web"
+      : activeToolName === "search_image"
+        ? "Fetching image"
+        : activeToolName === "search_gif"
+          ? "Fetching GIF"
+          : `Using ${activeToolName}`
+    : status === "generating"
+      ? "Working on your request"
+      : status === "speaking"
+        ? "Speaking response"
+        : null;
+
   return (
     <div className="app-shell min-h-screen text-zinc-100 flex flex-col font-sans selection:bg-purple-500/30 selection:text-purple-200">
       {/* Header */}
@@ -793,13 +846,13 @@ function App() {
         </div>
       </header>
 
-      {/* Mobile Privacy & Backend Banner */}
+      {/* Mobile Privacy & Connection Banner */}
       <div className="bg-zinc-900 border-b border-zinc-800 xl:hidden">
         <div className="safe-container py-2 flex items-center justify-between text-[10px] font-mono tracking-wider text-zinc-400">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
               <Cpu className="w-3 h-3 text-purple-400" />
-              {agentBackend === "hermes" ? "HERMES" : "BUILT-IN"}
+              {agentBackend === "hermes" ? "HERMES" : "LM STUDIO"}
             </span>
             <span className="flex items-center gap-1">
               <Wrench className="w-3 h-3 text-indigo-400" />
@@ -827,10 +880,25 @@ function App() {
         <div className="space-y-5 lg:space-y-6">
           {/* Active Session Status Card */}
           <div className="vokel-panel rounded-3xl p-5 sm:p-6">
-            <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
-              <Cpu className="w-4 h-4 text-purple-400" />
-              <span>Session Control</span>
-            </h2>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase flex items-center space-x-2">
+                <Cpu className="w-4 h-4 text-purple-400" />
+                <span>Session Control</span>
+              </h2>
+              <span
+                className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                  isPaused
+                    ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                    : status === "listening"
+                      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
+                      : status === "generating" || status === "speaking"
+                        ? "border-blue-500/25 bg-blue-500/10 text-blue-300"
+                        : "border-zinc-800 bg-zinc-950 text-zinc-500"
+                }`}
+              >
+                {isPaused ? "Paused" : status}
+              </span>
+            </div>
 
             <div className="space-y-4">
               <div className="flex rounded-xl bg-zinc-950 p-1 border border-zinc-900">
@@ -980,15 +1048,15 @@ function App() {
             </div>
           </div>
 
-          {/* Agent Extension */}
+          {/* Connection */}
           <div className="vokel-panel rounded-3xl p-5 sm:p-6">
             <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
               <Bot className="w-4 h-4 text-purple-400" />
-              <span>Agent Extension</span>
+              <span>Connection</span>
             </h2>
 
             <p className="text-[11px] leading-relaxed text-zinc-500 mb-4">
-              Built-in uses LM Studio directly. Hermes mode makes Vokel the voice front-end while Hermes owns
+              LM Studio connection uses your local LM Studio endpoint directly. Hermes connection keeps Vokel as the voice front-end while Hermes owns
               reasoning, memory, and tools.
             </p>
 
@@ -1002,7 +1070,7 @@ function App() {
                     : "text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
                 }`}
               >
-                BUILT-IN
+                LM STUDIO
               </button>
               <button
                 disabled={isSessionActive}
@@ -1103,7 +1171,7 @@ function App() {
 
             <p className="text-[11px] leading-relaxed text-zinc-500 mb-4">
               {agentBackend === "hermes"
-                ? "Disabled in Hermes mode — Hermes gateway tools and MCP servers handle capabilities."
+                ? "Disabled in Hermes connection — Hermes gateway tools and MCP servers handle capabilities."
                 : "Enable tools the model can use during conversation. All off by default to keep responses fast and local."}
             </p>
 
@@ -1451,6 +1519,38 @@ function App() {
 
         {/* Right column: Spectrums and Transcript (2 columns wide) */}
         <div className="space-y-5 lg:space-y-6 min-w-0">
+          {/* Trust State Surface (Slice B) */}
+          <details className="vokel-panel rounded-3xl p-5 sm:p-6" open>
+            <summary className="cursor-pointer list-none">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">
+                    Trust State
+                  </div>
+                  <div className="mt-1 text-xs font-mono text-zinc-300">{trustSummary}</div>
+                </div>
+                <span className="text-[10px] font-mono uppercase text-zinc-500">Details</span>
+              </div>
+            </summary>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              {[
+                { label: "Active Connection", value: activeConnectionLabel },
+                { label: "Route", value: routeLabel },
+                { label: "Voice", value: voiceLabel },
+                { label: "Tools", value: toolsOwnerLabel },
+                { label: "Privacy", value: privacyLabel },
+                { label: "Interrupt", value: interruptLabel },
+                { label: "Consent", value: consentLabel },
+              ].map((item) => (
+                <div key={item.label} className="vokel-panel-subtle rounded-2xl px-3 py-2">
+                  <div className="text-[10px] font-mono uppercase text-zinc-500">{item.label}</div>
+                  <div className="mt-1 text-xs font-mono text-zinc-300">{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </details>
+
           {/* Live Voice Presence — Command #2 */}
           <div className="vokel-panel rounded-3xl p-8 flex flex-col items-center">
             <PersonaSelector current={currentPersona} onChange={handlePersonaChange} />
@@ -1469,8 +1569,114 @@ function App() {
           {/* Waveform visualizer (detailed audio pipeline) */}
           <WaveformVisualizer status={status} volume={isStreaming ? micVolume : 0} />
 
+          {/* Near-transcript session controls (UI-1) */}
+          <div className="vokel-panel rounded-2xl p-3 sm:p-4 sticky top-20 z-20">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">
+                  Session cockpit
+                </div>
+                <div className="mt-1 text-xs font-mono text-zinc-300 truncate">
+                  {trustSummary} • Output {outputMuted ? "muted" : "on"}
+                </div>
+              </div>
+              <span
+                className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                  sessionStateLabel === "paused"
+                    ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                    : sessionStateLabel === "listening"
+                      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
+                      : sessionStateLabel === "generating" || sessionStateLabel === "speaking"
+                        ? "border-blue-500/25 bg-blue-500/10 text-blue-300"
+                        : "border-zinc-800 bg-zinc-950 text-zinc-500"
+                }`}
+              >
+                {sessionStateLabel}
+              </span>
+            </div>
+
+            {activeActionLabel && (
+              <div className="mt-3 overflow-hidden rounded-xl border border-blue-500/20 bg-blue-500/10">
+                <div className="flex items-center justify-between gap-3 px-3 py-2">
+                  <div className="flex min-w-0 items-center gap-2 text-xs font-mono text-blue-100">
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-blue-300" />
+                    <span className="truncate">{activeActionLabel}</span>
+                  </div>
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-blue-300 shadow-[0_0_18px_rgba(147,197,253,0.85)]" />
+                </div>
+                <div className="h-0.5 w-full overflow-hidden bg-blue-950/60">
+                  <div className="h-full w-1/2 animate-pulse bg-gradient-to-r from-blue-400 via-cyan-300 to-blue-400" />
+                </div>
+              </div>
+            )}
+
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {!isSessionActive ? (
+                <button
+                  disabled={!isConnected}
+                  onClick={handleStartSession}
+                  className="touch-button col-span-2 sm:col-span-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-550 hover:to-indigo-550 disabled:from-zinc-900 disabled:to-zinc-900 disabled:text-zinc-600 disabled:border-zinc-850 disabled:shadow-none px-3 rounded-xl text-xs font-bold tracking-wide flex items-center justify-center space-x-2 text-white shadow-lg shadow-purple-500/10 transition-all border border-purple-500/20"
+                >
+                  <Mic className="w-4 h-4" />
+                  <span>START</span>
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={handleStopSession}
+                    className="touch-button bg-zinc-950 border border-zinc-850 hover:bg-zinc-900 px-3 rounded-xl text-xs font-bold tracking-wide flex items-center justify-center space-x-1.5 text-zinc-300 transition-all"
+                  >
+                    <MicOff className="w-4 h-4" />
+                    <span>STOP</span>
+                  </button>
+                  <button
+                    onClick={handlePauseResume}
+                    className="touch-button bg-zinc-950 border border-zinc-850 hover:bg-zinc-900 px-3 rounded-xl text-xs font-bold tracking-wide flex items-center justify-center space-x-1.5 text-zinc-300 transition-all"
+                  >
+                    {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                    <span>{isPaused ? "RESUME" : "PAUSE"}</span>
+                  </button>
+                  <button
+                    onClick={handleInterrupt}
+                    className="touch-button bg-rose-950 hover:bg-rose-900 border border-rose-900/40 px-3 rounded-xl text-xs font-bold tracking-wide flex items-center justify-center space-x-1.5 text-rose-100 shadow-lg shadow-rose-950/20 transition-all"
+                  >
+                    <Flame className="w-4 h-4" />
+                    <span>BARGE IN</span>
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => setOutputMuted((muted) => !muted)}
+                className={`touch-button rounded-xl border px-3 text-xs font-bold tracking-wide flex items-center justify-center space-x-1.5 transition-all ${
+                  outputMuted
+                    ? "border-amber-500/35 bg-amber-500/10 text-amber-100"
+                    : "border-zinc-850 bg-zinc-950 text-zinc-300 hover:bg-zinc-900"
+                }`}
+              >
+                {outputMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                <span>{outputMuted ? "UNMUTE" : "MUTE"}</span>
+              </button>
+              <button
+                disabled={!isSessionActive}
+                onClick={handleReset}
+                className="touch-button rounded-xl border border-zinc-850 bg-zinc-950 hover:bg-zinc-900 px-3 text-xs font-bold tracking-wide flex items-center justify-center space-x-1.5 text-zinc-300 transition-all disabled:opacity-40"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>RESET</span>
+              </button>
+            </div>
+          </div>
+
           {/* Chat transcript stream */}
-          <TranscriptStream messages={messages} status={status} />
+          <TranscriptStream
+            messages={messages}
+            status={status}
+            activeConnection={agentBackend === "hermes" ? "hermes" : "lm_studio"}
+            activeRoute={agentBackend === "hermes" ? "external" : "local"}
+            activePrivacy={agentBackend === "hermes" ? "external_active" : "local"}
+            activeAction={activeActionLabel}
+          />
 
           <WorkspaceTabs
             activeTab={workspaceTab}

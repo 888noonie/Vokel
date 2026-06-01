@@ -1,106 +1,72 @@
-# Vokel Session Handover — Rich Media & Tool Polish
+# Vokel Session Handover - Agent Boundary And Voice-Loop Hardening
 
-**Session Type:** Extended Grok Build Command #4 + rapid follow-up iteration  
-**Date:** ~June 2026  
-**Participants:** User (GB) + Grok (as primary implementer)  
-**Mood:** Extremely productive and joyful. Multiple "brilliant" moments.
+**Date:** 2026-05-28  
+**Session focus:** Make the LM Studio and Hermes paths cleaner, safer, and easier to evolve into a plugin-style intelligence layer.  
+**Validation:** `.venv/bin/python -m pytest -q` -> `96 passed`
 
-## Executive Summary
+## Summary
 
-We delivered a production-grade, unified rich media presentation layer for Vokel that works **identically** whether the intelligence comes from:
+This session tightened the boundary between the Vokel engine and the intelligence backends that sit behind it.
 
-- Local Built-in tools (Unsplash, Giphy, SerpApi DuckDuckGo)
-- External agents (Hermes as the blueprint)
+The useful framing for tomorrow:
 
-The system now produces beautiful, consistent `MediaCard` components for images, GIFs, and web results, complete with:
+- **Vokel engine:** owns voice capture, playback, interruption, routing, consent, audit, transcript display, Media Cards, and speech sanitization.
+- **LM Studio intelligence plugin:** local OpenAI-compatible model path. Vokel may provide deterministic local tools when enabled.
+- **Hermes intelligence plugin:** external agent path. Hermes owns reasoning, memory, and tools; Vokel exposes state, cues, cancellation, consent, and audit.
 
-- Clickable sources and raw URLs
-- Expandable "Details" panels with full transparent data
-- Action buttons: **Save**, **Hide**, **Remove from chat**, **Delete**
-- "Use this in next turn" integration
+The implementation is not a full plugin system yet, but the code now points in that direction through backend capabilities, explicit tool activity events, and cleaner routing signals.
 
-Major reliability fixes were made to the web search scraper and the deterministic forced tool triggers for images.
+## What Changed
 
-The user explicitly noted this now provides something "the less fortunate can use for free."
+### Backend Boundary
 
-## What Was Delivered
+- Added `AgentBackendCapabilities` so backends can advertise ownership and behavior.
+- Added `ToolActivityEvent` for tool lifecycle signals without leaking fake assistant text into the transcript.
+- Extended the shared tool activity contract so backends are told not to print serialized tool calls and not to infer new image/GIF/web searches from praise, thanks, or brief feedback.
+- Hermes HTTP and WebSocket clients now surface tool activity as structured events.
+- Hermes startup now checks that the configured model can actually stream text, not just that the gateway is reachable.
+- Built-in/local mode keeps Vokel-owned deterministic tools behind the existing `ToolRegistry`.
 
-### 1. Core Rich Media System (Command #4 Foundation)
-- New `MediaCard.tsx` component (image / gif / web / structured)
-- Backend `media_formatter.py` + `format_tool_result_for_display()`
-- Rich results flow via `rich_tool_result` telemetry → `media_card` WebSocket events
-- Works for both forced deterministic tools and voluntary model-called tools
-- Full parity between Built-in and Hermes modes
+### Voice-Loop Hardening
 
-### 2. MediaCard UX Polish (User-Driven Iteration)
-- Bare image URLs from external agents (Hermes) now automatically promote to rich cards
-- Expandable Details panel with properly **clickable** links (fixed copy/paste-only problem for Hermes and selectable-only for Unsplash)
-- Action bar inside Details: Save / Hide (local collapse) / Remove from chat / Delete
-- Improved web card layout (stacked result blocks with visual separation)
-- Source links rendered as proper `<a>` elements
+- Suppressed local-model leaked tool syntax such as:
+  - `[tool_call:search_image]`
+  - `<|tool_call>call:search_image{...}<tool_call|>`
+- Added a TTS sanitizer fallback so leaked tool syntax is stripped even if it reaches speech cleanup.
+- Improved phrase chunking so streamed URLs, media paths, and Markdown image links do not get split mid-link.
+- Preserved the key rule: tool/media display can be rich, but speech stays calm and caption-like.
 
-### 3. Tool Reliability Fixes
-- Hardened `_scrape_page_content()` in `web_search.py`:
-  - Added blocklist for Google auth/login domains (`accounts.google.com`, `mail.google.com`, etc.)
-  - Prevents noisy redirects and polluted evidence
-- Strengthened image search forced triggers in `engine.py`:
-  - Added support for natural testing language: "image search", "demonstrate the image search tool", "try the image search", etc.
-  - Updated query extraction and filler logic
-- Web search results now consistently surface as clean `MediaCard` (type=web) even when the model does a mediocre synthesis job
+### Dashboard Polish
 
-### 4. Cross-Mode Consistency
-- Every rich result (image, GIF, web) renders the same beautiful card with the same actions whether the backend is local or Hermes.
-- Vokel continues to own all presentation, voice, interruption, consent, and the rich output layer.
+- Added an active action indicator for searches, image fetches, GIF fetches, generation, and speech.
+- Added a near-transcript session cockpit with start/stop/pause/resume/barge-in/mute/reset controls.
+- Improved transcript media inference so Markdown file links, image URLs, GIF URLs, and external media links promote to cards instead of noisy spoken or visible raw links.
 
-## Tool Test Results (This Session)
+## Current State
 
-- **Web Search**: Good, clean W3Schools example. Results rendered as proper web MediaCard with clickable source and full Details + actions.
-- **Image Search**: Excellent. Produced a lovely Unsplash photo of tools on a wooden table (very meaningful to the user as a former joiner). Full attribution, clickable links in Details, action buttons all working.
-- **GIF Search**: Worked reliably (Desert Flippers). Minor duplication noted in transcript rendering (rendering paths firing in parallel). Still very usable.
+The repo is ready for the next architecture pass:
 
-Small model (Gemma 4B) in Aggressive mode still occasionally prefers `search_web` over dedicated tools — this is expected and now well-managed by the forced paths + improved triggers.
+- Tests pass in the project venv.
+- The session export that exposed the local-model serialized tool-call leak was read and deleted from `data/`.
+- The direction is now clear enough to start extracting a universal backend/plugin vocabulary tomorrow.
 
-## Known Limitations / Polish Items
+## Tomorrow's Thread
 
-- GIF duplication in transcript (low priority — cosmetic)
-- Web search quality still tied to SerpApi + model synthesis quality (user acknowledged future Chromium-based scraper work)
-- "Save" action is currently a stub (ready for memory integration or dedicated media library)
-- Very small models can still produce noisy synthesis text around the rich cards
+Recommended next slice:
 
-## Key Files Changed (High-Level)
+1. Rename the mental model from backend mode to **intelligence plugin** in docs and UI copy where it helps.
+2. Introduce a small `ConnectionDefinition` or `IntelligencePlugin` descriptor around the existing LM Studio and Hermes paths.
+3. Keep `AgentBackend` as the runtime streaming protocol.
+4. Move plugin metadata out of scattered UI/backend conditionals:
+   - display name
+   - route: local/external
+   - tool ownership
+   - supports cancellation
+   - supports session reset
+   - emits tool activity
+5. Make the UI render those descriptors instead of hardcoding LM Studio/Hermes branching everywhere.
 
-**Frontend**
-- `frontend/src/components/MediaCard.tsx` — Major evolution (clickable links, expandable Details, action buttons, web-specific layout)
-- `frontend/src/components/TranscriptStream.tsx` — Improved bare URL promotion, forwarding of all callbacks, better web handling
+The product test remains unchanged:
 
-**Backend**
-- `src/vokel/web_search.py` — Scraper hardening + blocked auth domains
-- `src/vokel/engine.py` — Expanded image forced triggers + query extraction
-- `src/vokel/media_formatter.py` — Already solid; continues to feed clean structured data for all three tools
+> You speak. It answers. You interrupt. It stops. It listens again. No button.
 
-**Documentation**
-- `ROADMAP.md`, `README.md`, `docs/agent-tools.md` — Updated with current MediaCard capabilities and cross-mode behavior
-
-## Next Steps / Future Work (Discussed)
-
-1. **Better Web Search Backend** — Chromium-based scraping or alternative provider (user's suggestion)
-2. **Smarter Web Card Rendering** — Parse individual search results into titled, clickable entries inside the card
-3. **"Save" Action** — Wire to local memory or a dedicated media collection
-4. **Further MediaCard Polish** — Different visual treatment for generated vs searched images, richer metadata, etc.
-5. **Tool Discipline + Small Model Experience** — Continue hardening prompts and forced paths
-
-## Closing Notes
-
-This session took the rich media vision from a solid foundation (Command #4) to something genuinely delightful and usable. The user was particularly moved by the image search result matching their joinery background.
-
-The system now gives people without expensive subscriptions or powerful local hardware a genuinely nice voice + visual tool experience for free.
-
-**"What a session!"** — User's words.
-
----
-
-**Handover prepared for bedtime reading with Grok Chat.**
-
-You're very welcome. It has been an absolute pleasure building this with you. Looking forward to the next Grok Build round.
-
-— Grok (with deep respect for the craft)

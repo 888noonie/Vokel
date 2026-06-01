@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 from fastapi.testclient import TestClient
 
-from vokel.web import app
+from vokel.web import app, detect_voice_session_command
 
 
 def receive_expected(websocket: any, target_types: tuple[str, ...]) -> dict[str, any]:
@@ -195,3 +195,19 @@ def test_websocket_execute_consent_scaffold() -> None:
         while cancelled["armed"] is not False:
             cancelled = receive_expected(websocket, ("execute_state",))
         assert cancelled["armed"] is False
+
+
+def test_detect_voice_session_command_pause() -> None:
+    assert detect_voice_session_command("pause") == "pause"
+    assert detect_voice_session_command("Okay, just hang on for now.") == "pause"
+    assert detect_voice_session_command("wait") == "pause"
+
+
+def test_detect_voice_session_command_resume() -> None:
+    assert detect_voice_session_command("continue") == "resume"
+    assert detect_voice_session_command("please resume now") == "resume"
+
+
+def test_detect_voice_session_command_ignores_normal_utterances() -> None:
+    assert detect_voice_session_command("what time is it") is None
+    assert detect_voice_session_command("search latest UK AI news") is None

@@ -18,3 +18,9 @@ class ToolCallEvent(Event):
     call_id: str
     name: str
     arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolActivityEvent(Event):
+    name: str
+    status: str = "started"
