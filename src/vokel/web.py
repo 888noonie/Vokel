@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from .audio import (
     MicVadConfig,
@@ -35,7 +36,6 @@ from .hermes_client import (
     check_gateway_health,
     check_gateway_inference,
 )
-from .web_search import create_default_registry
 from .inference import InferenceError, LocalInferenceClient
 from .memory import MemoryConfig, SQLiteMemoryStore
 from .playback import (
@@ -47,12 +47,21 @@ from .playback import (
     sanitize_for_speech,
 )
 from .telemetry import LatencyTrace, TraceEvent
+from .vision import (
+    DEFAULT_VISION_PROMPT,
+    analyze_camera_frame,
+    capture_camera_frame,
+    is_loopback_url,
+    list_camera_devices,
+    should_capture_visual_context,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vokel.web")
 
 _FRONTEND_DIST = Path("frontend/dist")
 _FAVICON_PATH = _FRONTEND_DIST / "favicon.svg"
+_VISION_CAPTURE_LOCK = asyncio.Lock()
 
 
 VoiceSessionCommand = Literal["pause", "resume"]
@@ -185,6 +194,72 @@ class WebSocketPlaybackSink:
         })
 
 
+class VisionAnalyzeRequest(BaseModel):
+    device: str = "/dev/video4"
+    url: str = LmStudioConfig.url
+    model_name: str = Field(default=LmStudioConfig.model, alias="model")
+    prompt: str = DEFAULT_VISION_PROMPT
+    max_tokens: int = Field(default=120, ge=1, le=400)
+    width: int = Field(default=640, ge=160, le=1920)
+    height: int = Field(default=480, ge=120, le=1080)
+    framerate: int = Field(default=30, ge=1, le=60)
+    warmup_frames: int = Field(default=8, ge=1, le=30)
+
+
+@app.get("/api/vision/cameras")
+def get_vision_cameras() -> dict[str, Any]:
+    cameras = list_camera_devices()
+    default_device = "/dev/video4" if any(camera.path == "/dev/video4" for camera in cameras) else ""
+    if not default_device and cameras:
+        default_device = cameras[0].path
+    return {
+        "cameras": [{"path": camera.path, "name": camera.name} for camera in cameras],
+        "default_device": default_device,
+        "local_only": True,
+    }
+
+
+@app.post("/api/vision/analyze")
+async def analyze_vision(request: VisionAnalyzeRequest) -> dict[str, Any]:
+    if not is_loopback_url(request.url):
+        raise HTTPException(
+            status_code=400,
+            detail="Live vision only sends frames to a loopback LM Studio endpoint.",
+        )
+
+    cameras = list_camera_devices()
+    if request.device not in {camera.path for camera in cameras}:
+        raise HTTPException(status_code=400, detail=f"Camera device is not available: {request.device}")
+    if _VISION_CAPTURE_LOCK.locked():
+        raise HTTPException(status_code=409, detail="A live vision capture is already running.")
+
+    try:
+        async with _VISION_CAPTURE_LOCK:
+            analysis = await asyncio.to_thread(
+                analyze_camera_frame,
+                device=request.device,
+                url=request.url,
+                model=request.model_name,
+                prompt=request.prompt,
+                max_tokens=request.max_tokens,
+                width=request.width,
+                height=request.height,
+                framerate=request.framerate,
+                warmup_frames=request.warmup_frames,
+            )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "device": analysis.device,
+        "description": analysis.description,
+        "image_data_url": analysis.image_data_url,
+        "capture_seconds": analysis.capture_seconds,
+        "inference_seconds": analysis.inference_seconds,
+        "local_only": True,
+    }
+
+
 @app.websocket("/api/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -213,6 +288,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     browser_last_text = ""
     browser_last_changed_time = asyncio.get_running_loop().time()
     browser_stable_fired = False
+    vision_voice_enabled = False
+    vision_device = "/dev/video4"
+    vision_lm_url = LmStudioConfig.url
 
     async def run_auto_followup() -> None:
         if engine is None or session_paused:
@@ -305,6 +383,70 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "detail": detail,
         })
 
+    async def capture_voice_vision_context() -> str | None:
+        if not is_loopback_url(vision_lm_url):
+            await send_json({
+                "type": "error",
+                "message": "Voice camera context requires a loopback LM Studio endpoint.",
+            })
+            return None
+        if vision_device not in {camera.path for camera in list_camera_devices()}:
+            await send_json({
+                "type": "error",
+                "message": f"Voice camera is not available: {vision_device}",
+            })
+            return None
+
+        await send_agent_event(
+            "visual_context_capture_started",
+            backend="vokel",
+            detail=f"Capturing one local frame from {vision_device}",
+            device=vision_device,
+        )
+        try:
+            async with _VISION_CAPTURE_LOCK:
+                captured = await asyncio.to_thread(
+                    capture_camera_frame,
+                    device=vision_device,
+                    width=640,
+                    height=480,
+                    framerate=30,
+                    warmup_frames=8,
+                )
+        except RuntimeError as exc:
+            await send_agent_event(
+                "visual_context_capture_failed",
+                backend="vokel",
+                level="error",
+                detail=str(exc),
+                device=vision_device,
+            )
+            await send_json({"type": "error", "message": str(exc)})
+            return None
+
+        await send_json({
+            "type": "vision_context_captured",
+            "device": captured.device,
+            "image_data_url": captured.image_data_url,
+            "capture_seconds": captured.capture_seconds,
+        })
+        await send_agent_event(
+            "visual_context_attached",
+            backend="vokel",
+            detail="Fresh local camera frame attached to spoken question",
+            device=captured.device,
+            capture_seconds=captured.capture_seconds,
+        )
+        return captured.image_data_url
+
+    async def provide_voice_visual_context(user_text: str) -> str | None:
+        if not vision_voice_enabled or not should_capture_visual_context(user_text):
+            return None
+        await send_json({"type": "status", "status": "capturing_vision"})
+        image_data_url = await capture_voice_vision_context()
+        await send_json({"type": "status", "status": "generating"})
+        return image_data_url or ""
+
     async def pause_active_session(source: str) -> None:
         nonlocal session_paused, local_loop_task
         if not engine:
@@ -391,6 +533,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     session_mode = data.get("mode", "local")
                     url = data.get("url", LmStudioConfig.url)
                     model = data.get("model", LmStudioConfig.model)
+                    vision_voice_enabled = bool(data.get("vision_voice_enabled", False)) and not hermes_mode
+                    vision_device = str(data.get("vision_device", "/dev/video4"))
+                    vision_lm_url = str(url)
                     voice = str(data.get("voice", "af_heart"))
                     if voice not in KOKORO_VOICES:
                         voice = "af_heart"
@@ -406,15 +551,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         scan_limit=memory_config.scan_limit,
                     )
                     memory_store = active_memory_store if memory_config.enabled else None
-
-                    enabled_tools: set[str] = set()
-                    if not hermes_mode:
-                        if data.get("tool_image"):
-                            enabled_tools.add("search_image")
-                        if data.get("tool_gif"):
-                            enabled_tools.add("search_gif")
-                        if data.get("tool_web"):
-                            enabled_tools.add("search_web")
 
                     if hermes_mode:
                         hermes_base = str(
@@ -526,9 +662,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             echo_tokens=False,
                             memory_store=memory_store,
                             memory_config=memory_config,
-                            tool_registry=create_default_registry(),
-                            enabled_tools=enabled_tools,
                             agent_mode=agent_mode,
+                            visual_context_provider=provide_voice_visual_context,
                         )
                         await engine.start()
                         attach_auto_followup_scheduler()
@@ -593,9 +728,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             echo_tokens=False,
                             memory_store=memory_store,
                             memory_config=memory_config,
-                            tool_registry=create_default_registry(),
-                            enabled_tools=enabled_tools,
                             agent_mode=agent_mode,
+                            visual_context_provider=provide_voice_visual_context,
                         )
                         await engine.start()
                         attach_auto_followup_scheduler()
@@ -682,6 +816,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             "voice": voice,
                             "error": str(e),
                         })
+
+                elif msg_type == "set_vision_context":
+                    requested_device = str(data.get("device", vision_device))
+                    requested_enabled = bool(data.get("enabled", False))
+                    available_devices = {camera.path for camera in list_camera_devices()}
+                    if requested_enabled and current_agent_backend != "builtin":
+                        await send_json({
+                            "type": "error",
+                            "message": "Voice camera context is only available with the LM Studio connection.",
+                        })
+                        continue
+                    if requested_enabled and requested_device not in available_devices:
+                        await send_json({
+                            "type": "error",
+                            "message": f"Voice camera is not available: {requested_device}",
+                        })
+                        continue
+                    vision_device = requested_device
+                    vision_voice_enabled = requested_enabled
+                    await send_agent_event(
+                        "visual_context_setting_changed",
+                        backend="vokel",
+                        detail=(
+                            f"Voice camera context {'enabled' if vision_voice_enabled else 'disabled'}"
+                        ),
+                        device=vision_device,
+                        enabled=vision_voice_enabled,
+                    )
 
                 elif msg_type == "stop_session":
                     await send_agent_event("session_stop_requested", detail="Stop requested", backend="vokel")

@@ -12,7 +12,7 @@ its own memory, tools, and provider configuration.
 
 | Mode | Who reasons | Who owns history | Vokel tools |
 | --- | --- | --- | --- |
-| **Built-in** | Local OpenAI-compatible endpoint via `LocalInferenceClient` | Vokel `ConversationEngine` | Optional web/image/GIF |
+| **Built-in** | Local OpenAI-compatible endpoint via `LocalInferenceClient` | Vokel `ConversationEngine` | Disabled in Vokel; LM Studio owns platform capabilities |
 | **Hermes** | Hermes API Server (`hermes gateway`) | Hermes `conversation` id | Disabled in Vokel; Hermes owns its tools |
 
 ## Hermes setup
@@ -51,10 +51,10 @@ Vokel does not call the model provider directly in Hermes mode.
 
 ## Boundaries
 
-- Vokel-owned tools are for Built-in mode.
+- LM Studio-owned tools stay behind the LM Studio platform boundary.
 - Hermes-owned tools stay behind the Hermes gateway.
-- Vokel displays Hermes session and gateway state, but does not duplicate Hermes
-  browser, email, repository, or messaging tools.
+- Vokel displays connection state and returned media artifacts, but does not
+  duplicate LM Studio or Hermes browser, email, repository, or messaging tools.
 - Future execution flows should use Vokel's consent boundary before high-risk
   actions are allowed.
 

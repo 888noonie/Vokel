@@ -7,7 +7,6 @@ from pathlib import Path
 from .audio import MicVadConfig, SherpaOfflineAsr, SherpaOfflineAsrConfig, SileroVadTurnProducer
 from .config import LmStudioConfig
 from .engine import ConversationEngine
-from .web_search import create_default_registry
 from .inference import LocalInferenceClient
 from .memory import MemoryConfig, SQLiteMemoryStore
 from .playback import ConsolePlaybackSink
@@ -147,7 +146,6 @@ async def run(args: argparse.Namespace) -> None:
             echo_tokens=False,
             memory_store=memory_store,
             memory_config=memory_config,
-            tool_registry=create_default_registry(),
         )
         await engine.start()
         try:

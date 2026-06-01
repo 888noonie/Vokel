@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from vokel.engine import ConversationEngine
-from vokel.events import Event, TextDeltaEvent, ToolCallEvent
+from vokel.events import Event, TextDeltaEvent
 from vokel.agent_backend import TOOL_ACTIVITY_REPORTING_CONTRACT
 from vokel.inference import ChatMessage
 from vokel.memory import MemoryConfig, MemoryEntry
@@ -17,11 +17,13 @@ class FakeLlm:
         self.events = events
         self.delay = delay
         self.messages: list[list[ChatMessage]] = []
+        self.tools: list[list[dict[str, Any]] | None] = []
 
     async def stream_chat(
         self, messages: Sequence[ChatMessage], tools: list[dict[str, Any]] | None = None
     ) -> AsyncIterator[Event]:
         self.messages.append(list(messages))
+        self.tools.append(tools)
         for event in self.events:
             if self.delay:
                 await asyncio.sleep(self.delay)
@@ -353,6 +355,87 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(queries, [])
         self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Regular text response."})
+
+    async def test_visual_turn_attaches_frame_and_suppresses_search_tools(self) -> None:
+        queries: list[str] = []
+
+        async def fake_search_image(query: str) -> str:
+            queries.append(query)
+            return "![camera](https://example.com/camera.jpg)"
+
+        async def visual_context_provider(user_text: str) -> str | None:
+            if user_text == "What am I holding?":
+                return "data:image/jpeg;base64,anBlZw=="
+            return None
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="search_image",
+                description="Search images.",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                func=fake_search_image,
+            )
+        )
+        llm: Any = FakeLlm([TextDeltaEvent("You are holding a mug.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            tool_registry=registry,
+            enabled_tools={"search_image"},
+            visual_context_provider=visual_context_provider,
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("What am I holding?")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(queries, [])
+        self.assertIsNone(llm.tools[0])
+        self.assertEqual(
+            llm.messages[0][-1],
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/jpeg;base64,anBlZw=="},
+                    },
+                    {"type": "text", "text": "What am I holding?"},
+                ],
+            },
+        )
+        self.assertIn({"role": "user", "content": "What am I holding?"}, engine.history)
+        self.assertNotIn("data:image", str(engine.history))
+
+    async def test_visual_capture_failure_is_spoken_without_model_guessing(self) -> None:
+        async def visual_context_provider(user_text: str) -> str | None:
+            return "" if user_text == "What am I holding?" else None
+
+        llm: Any = FakeLlm([TextDeltaEvent("Should not run.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            visual_context_provider=visual_context_provider,
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("What am I holding?")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(llm.messages, [])
+        self.assertEqual(
+            playback.spoken,
+            ["I couldn't capture a camera frame, so I can't answer that visual question yet."],
+        )
 
     async def test_image_followup_context_allows_another_one_like_that(self) -> None:
         queries: list[str] = []

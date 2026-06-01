@@ -1,117 +1,57 @@
-# Agent Tools
+# Platform Capabilities
 
-In Built-in mode, Vokel supports a small agent tool layer for capabilities that
-should stay outside the model itself. Three production tools are registered by
-default:
+Vokel is the voice, interruption, routing, consent, audit, and display layer.
+It does not bundle provider-specific web, image, or GIF APIs.
 
-- `search_web` — SerpApi DuckDuckGo with BBC RSS shortcut and page scraping
-- `search_image` — Unsplash photo search with inline transcript rendering
-- `search_gif` — Giphy GIF/reaction/meme search with context-aware follow-ups
+## Ownership
 
-## Runtime Contract
+| Connection | Capability owner | Vokel responsibility |
+| --- | --- | --- |
+| **LM Studio** | LM Studio and its configured MCP integrations | Stream local model turns, capture explicitly armed camera context, show activity, and render returned artifacts |
+| **Hermes** | Hermes and the services configured behind its gateway | Stream Hermes turns, preserve cancellation and consent cues, and render returned artifacts |
 
-The Built-in conversation engine keeps inference and tool execution separate:
+The `ToolRegistry` / `ToolDefinition` types remain as an explicit extension
+point for narrow runtime capabilities. No provider registry is created by
+default, and Vokel does not duplicate capabilities owned by LM Studio or Hermes.
 
-- `LocalInferenceClient` streams OpenAI-compatible text and tool-call events.
-- `ToolRegistry` owns available tool schemas and Python implementations.
-- `ConversationEngine` executes tools, records timing marks, and manages the
-  hybrid synthesis loop.
-- The web UI listens for tool telemetry and exposes user-visible cues.
+## LM Studio Integration Note
 
-Explicit web, news, current, latest, or search requests run `search_web`
-deterministically before the model can answer. This is deliberate: smaller local
-models (tested with Gemma 4 E4B Q4 K M) often imitate browsing instead of
-emitting valid tool-call JSON. Direct tool execution protects the product loop
-from hallucinated search claims.
+Vokel's current `LocalInferenceClient` uses LM Studio's OpenAI-compatible chat
+completions endpoint. That endpoint can carry model tool-call events, but the
+client remains responsible for execution.
 
-## Hybrid Search-Then-Synthesize
+LM Studio also provides a native `/api/v1/chat` path for platform-managed MCP
+integrations. Using that path requires configured MCP servers and an adapter
+that selects the intended integration identifiers. Until that adapter is added,
+Vokel does not imply that an LM Studio UI integration is automatically active
+inside a Vokel session.
 
-The conversation engine uses a three-stage approach:
+## Media Contract
 
-1. **Search first.** The tool runs the DuckDuckGo API call. If the returned
-   snippets are too thin (generic page descriptions like "Reuters.com is your
-   online source..."), Vokel scrapes the actual page content from the top result
-   URLs to get real article text, weather data, or headlines.
+Vokel renders a transcript media card only when the backend returns a usable
+URL or artifact. A prose-only response such as "I found an image" remains text;
+there is no image payload to display.
 
-2. **Synthesize with evidence.** The search evidence is injected into a strict
-   system prompt that tells the model to answer from only that evidence. The
-   model cannot claim it cannot browse; the search already happened.
-
-3. **Fallback to raw evidence.** If the model still hedges ("I couldn't get",
-   "not available right now", etc.), Vokel discards the model's response and
-   speaks the raw numbered evidence with clickable links instead.
-
-This gives the local model the best chance to produce a natural spoken answer
-while guaranteeing the user always gets real data.
-
-## Image Search (Unsplash)
-
-When the user says "show me an image of", "picture of", or "photo of", the
-engine forces `search_image` deterministically. A landscape photo is fetched
-and rendered inline in the transcript as a rounded card with alt text and
-Unsplash attribution. The LLM receives a strict prompt to give a brief, warm
-spoken intro (1-2 sentences) without reading URLs or photographer metadata.
-
-## GIF Search (Giphy)
-
-When the user says "gif", "meme", "sticker", "reaction", "something funny",
-or "make me laugh", the engine forces `search_gif`. The detection is
-context-aware: if the last few turns mention GIFs, short follow-ups like
-"anything" or "cats" automatically trigger a new search without requiring
-explicit trigger words again.
-
-GIFs are rendered in a compact card (max 280px) with a purple border and a
-small "GIF" badge. The LLM receives a playful prompt to react like a friend
-sharing a GIF — one expressive sentence, no metadata.
-
-Query extraction strips filler words and caps at 60 characters to avoid
-414 URI Too Long errors from the Giphy API. ASR-tolerant triggers accept
-"show me a g" when speech recognition truncates "gif".
+Camera questions follow a separate local route. When the user explicitly arms
+Camera Questions in Voice Loop and asks a visual question, Vokel captures one
+fresh frame, attaches it to the current local-model turn, and discards the
+frame. This route does not depend on a web provider.
 
 ## Speech Sanitization
 
 The TTS path receives a sanitized version of each phrase before Kokoro or
-spd-say synthesizes it. The sanitizer strips:
-
-- Markdown bold/italic markers, headers, and bullet points
-- Raw URLs (replaced with "Link available in transcript")
-- Image markdown `![alt](url)` (replaced with alt text + "Image shown in transcript")
-- GIF markdown `![gif:title](url)` (replaced with "GIF shown in transcript")
-- Code blocks and backtick formatting
-- Angle brackets and pipe characters
-- Repeated punctuation
-
-The browser transcript keeps the original text with clickable links intact.
+spd-say synthesizes it. Raw URLs, Markdown image syntax, formatting markers,
+and tool-call syntax are stripped or replaced with short spoken captions.
+The browser transcript keeps useful links and media visible.
 
 ## Audio Cues
 
-The web UI plays a short two-tone click when an external tool starts (ascending
-pair) and a softer descending pair when the tool or generation finishes. Cues
-fire on `tool_call_forced` / `tool_call_started` and clear on
-`tool_call_finished` / `tool_call_failed` / `generation_finished`.
-
-## Voice Preview
-
-Users can audition any of the 28 bundled Kokoro voices before starting a
-session. The preview sends a `preview_voice` websocket command that synthesizes
-a short sample without creating transcript entries or touching memory state.
-
-## External Agent Boundary
-
-When Vokel is connected to an external agent stack such as Hermes, these
-Vokel-owned tools are disabled. The external agent owns its own tools, memory,
-and provider configuration. Vokel shows the active backend and consent state,
-but does not duplicate the external agent's browser, email, repository, or
-messaging tools.
+The web UI plays a short cue when a backend reports tool activity and clears
+the active state when the tool or generation finishes. Tool activity remains
+visible without leaking serialized calls into speech.
 
 ## Android Port Notes
 
-The tool layer is intentionally independent from LM Studio. Android can keep the
-same contract while replacing:
-
-- `LocalInferenceClient` with a llama.cpp, MLC LLM, or native inference adapter.
-- `ToolRegistry` implementations with Android services or local databases.
-- Web-only audio cues with Android audio focus and notification-safe earcons.
-
-The rule for mobile remains the same: model output can request a tool, but
-latency, cancellation, and user-visible cues belong to the runtime.
+The mobile rule remains the same: platform capabilities stay behind the active
+connection, while latency, cancellation, consent, and user-visible cues belong
+to Vokel.

@@ -7,6 +7,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from vokel.web import app, detect_voice_session_command
+from vokel.vision import CameraDevice, VisionFrameAnalysis
 
 
 def receive_expected(websocket: any, target_types: tuple[str, ...]) -> dict[str, any]:
@@ -27,6 +28,67 @@ def test_root_endpoint_returns_api_status() -> None:
     else:
         assert "message" in response.json()
         assert "Vokel Backend API" in response.json()["message"]
+
+
+@patch("vokel.web.list_camera_devices")
+def test_vision_camera_discovery_prefers_ps3_eye(mock_list_cameras: MagicMock) -> None:
+    mock_list_cameras.return_value = [
+        CameraDevice(path="/dev/video0", name="Integrated Camera"),
+        CameraDevice(path="/dev/video4", name="gspca main driver"),
+    ]
+
+    response = TestClient(app).get("/api/vision/cameras")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cameras": [
+            {"path": "/dev/video0", "name": "Integrated Camera"},
+            {"path": "/dev/video4", "name": "gspca main driver"},
+        ],
+        "default_device": "/dev/video4",
+        "local_only": True,
+    }
+
+
+@patch("vokel.web.analyze_camera_frame")
+@patch("vokel.web.list_camera_devices")
+def test_vision_analysis_returns_preview_and_latency(
+    mock_list_cameras: MagicMock,
+    mock_analyze: MagicMock,
+) -> None:
+    mock_list_cameras.return_value = [CameraDevice(path="/dev/video4", name="gspca main driver")]
+    mock_analyze.return_value = VisionFrameAnalysis(
+        device="/dev/video4",
+        description="A person is looking at the camera.",
+        image_data_url="data:image/jpeg;base64,anBlZw==",
+        capture_seconds=1.2,
+        inference_seconds=1.8,
+    )
+
+    response = TestClient(app).post(
+        "/api/vision/analyze",
+        json={
+            "device": "/dev/video4",
+            "url": "http://127.0.0.1:1234/v1/chat/completions",
+            "model": "local-vlm",
+            "prompt": "Describe this.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["description"] == "A person is looking at the camera."
+    assert response.json()["image_data_url"] == "data:image/jpeg;base64,anBlZw=="
+    mock_analyze.assert_called_once()
+
+
+def test_vision_analysis_rejects_external_endpoint() -> None:
+    response = TestClient(app).post(
+        "/api/vision/analyze",
+        json={"url": "https://example.com/v1/chat/completions"},
+    )
+
+    assert response.status_code == 400
+    assert "loopback" in response.json()["detail"]
 
 
 @patch("vokel.web.LocalInferenceClient")

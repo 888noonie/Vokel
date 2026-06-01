@@ -165,7 +165,8 @@ Code areas:
 Tasks:
 - Keep execute consent cues/banners visible in dashboard + console.
 - In Hermes connection, show tools as Hermes-owned and disable local forced tools.
-- In LM Studio connection, keep Vokel ToolRegistry path available.
+- In LM Studio connection, show LM Studio as the capability owner and do not
+  enable bundled provider tools inside Vokel.
 - Add/refresh docs language for ownership boundary.
 
 Exit checks:

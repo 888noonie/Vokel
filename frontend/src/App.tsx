@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useRef } from "react";
 import {
   Mic,
   MicOff,
@@ -16,9 +16,6 @@ import {
   Download,
   Save,
   Trash2,
-  Globe,
-  Image,
-  Clapperboard,
   Wrench,
   Bot,
   Volume2,
@@ -36,10 +33,12 @@ import { useAudioStreamer } from "./hooks/useAudioStreamer";
 import { playToolEndClick, playToolStartClick } from "./audio/toolCue";
 import { VoiceOrb } from "./components/VoiceOrb";
 import { PersonaSelector } from "./components/PersonaSelector";
+import { LiveVisionPanel } from "./components/LiveVisionPanel";
+import type { VisionFrame } from "./components/LiveVisionPanel";
 
 type Mode = "local" | "browser";
 type AgentBackend = "builtin" | "hermes";
-type Status = "idle" | "listening" | "generating" | "speaking" | "paused";
+type Status = "idle" | "listening" | "generating" | "speaking" | "paused" | "capturing_vision";
 
 interface MemoryFact {
   id: number;
@@ -138,9 +137,6 @@ function App() {
   const [memoryEnabled, setMemoryEnabled] = useState(false);
   const [autoFollowupEnabled, setAutoFollowupEnabled] = useState(true);
   const [autoFollowupSeconds, setAutoFollowupSeconds] = useState(8);
-  const [toolWebEnabled, setToolWebEnabled] = useState(false);
-  const [toolImageEnabled, setToolImageEnabled] = useState(false);
-  const [toolGifEnabled, setToolGifEnabled] = useState(false);
   const [agentBackend, setAgentBackend] = useState<AgentBackend>("builtin");
   const savedHermesPrefs = loadJson(hermesPrefsKey, {
     url: "http://127.0.0.1:8642",
@@ -153,6 +149,9 @@ function App() {
   const [hermesModel, setHermesModel] = useState(savedHermesPrefs.model);
   const [activeHermesSessionId, setActiveHermesSessionId] = useState<string | null>(null);
   const [probeStatus, setProbeStatus] = useState<"idle" | "probing" | "ok" | "error">("idle");
+  const [visionVoiceEnabled, setVisionVoiceEnabled] = useState(false);
+  const [visionDevice, setVisionDevice] = useState("/dev/video4");
+  const [voiceVisionFrame, setVoiceVisionFrame] = useState<VisionFrame | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
   const previewingVoiceRef = useRef<string | null>(null);
@@ -511,6 +510,16 @@ function App() {
             setMetrics(data.metrics);
             break;
 
+          case "vision_context_captured":
+            setVoiceVisionFrame({
+              device: String(data.device ?? ""),
+              description: "Fresh frame attached to your spoken question. Gemma's answer appears in the transcript.",
+              image_data_url: String(data.image_data_url ?? ""),
+              capture_seconds: Number(data.capture_seconds ?? 0),
+              inference_seconds: 0,
+            });
+            break;
+
           case "auto_followup":
             break;
 
@@ -550,9 +559,8 @@ function App() {
         memory: agentBackend === "builtin" && memoryEnabled,
         auto_followup: agentBackend === "builtin" && autoFollowupEnabled,
         auto_followup_seconds: autoFollowupSeconds,
-        tool_web: agentBackend === "builtin" && toolWebEnabled,
-        tool_image: agentBackend === "builtin" && toolImageEnabled,
-        tool_gif: agentBackend === "builtin" && toolGifEnabled,
+        vision_voice_enabled: agentBackend === "builtin" && visionVoiceEnabled,
+        vision_device: visionDevice,
         // Persona + Live Voice Presence (Command #2)
         persona: currentPersona,
         persona_prompt: personaPrompt,
@@ -722,6 +730,28 @@ function App() {
     );
   };
 
+  const handleVisionVoiceEnabledChange = useCallback((enabled: boolean) => {
+    setVisionVoiceEnabled(enabled);
+    if (socketRef.current && isConnected && isSessionActive) {
+      socketRef.current.send(JSON.stringify({
+        type: "set_vision_context",
+        enabled,
+        device: visionDevice,
+      }));
+    }
+  }, [isConnected, isSessionActive, visionDevice]);
+
+  const handleVisionDeviceChange = useCallback((device: string) => {
+    setVisionDevice(device);
+    if (socketRef.current && isConnected && isSessionActive && visionVoiceEnabled) {
+      socketRef.current.send(JSON.stringify({
+        type: "set_vision_context",
+        enabled: true,
+        device,
+      }));
+    }
+  }, [isConnected, isSessionActive, visionVoiceEnabled]);
+
   const handleExportMarkdown = () => {
     const selectedFacts = memoryFacts.filter((fact) => selectedMemoryIds.has(fact.id));
     const lines = [
@@ -766,7 +796,7 @@ function App() {
 
   const activeConnectionLabel = agentBackend === "hermes" ? "Hermes" : "LM Studio";
   const routeLabel = agentBackend === "hermes" ? "External agent" : "Local model";
-  const toolsOwnerLabel = agentBackend === "hermes" ? "Hermes-owned" : "Vokel-owned";
+  const toolsOwnerLabel = agentBackend === "hermes" ? "Hermes-owned" : "LM Studio-owned";
   const privacyLabel = agentBackend === "hermes" ? "External agent active" : "Local";
   const voiceLabel =
     playbackBackend === "kokoro"
@@ -789,13 +819,11 @@ function App() {
   const activeActionLabel = activeToolName
     ? activeToolName === "search_web"
       ? "Searching the web"
-      : activeToolName === "search_image"
-        ? "Fetching image"
-        : activeToolName === "search_gif"
-          ? "Fetching GIF"
-          : `Using ${activeToolName}`
+      : `Using ${activeToolName}`
     : status === "generating"
       ? "Working on your request"
+      : status === "capturing_vision"
+        ? "Capturing local camera context"
       : status === "speaking"
         ? "Speaking response"
         : null;
@@ -856,7 +884,7 @@ function App() {
             </span>
             <span className="flex items-center gap-1">
               <Wrench className="w-3 h-3 text-indigo-400" />
-              {agentBackend === "hermes" ? "REMOTE" : (toolWebEnabled || toolImageEnabled || toolGifEnabled ? "ENABLED" : "OFF")}
+              PLATFORM
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -891,6 +919,8 @@ function App() {
                     ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
                     : status === "listening"
                       ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
+                      : status === "capturing_vision"
+                        ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
                       : status === "generating" || status === "speaking"
                         ? "border-blue-500/25 bg-blue-500/10 text-blue-300"
                         : "border-zinc-800 bg-zinc-950 text-zinc-500"
@@ -1162,54 +1192,18 @@ function App() {
             )}
           </div>
 
-          {/* Online Tools */}
+          {/* Platform Capabilities */}
           <div className="vokel-panel rounded-3xl p-5 sm:p-6">
             <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
               <Wrench className="w-4 h-4 text-purple-400" />
-              <span>Online Tools</span>
+              <span>Platform Capabilities</span>
             </h2>
 
-            <p className="text-[11px] leading-relaxed text-zinc-500 mb-4">
+            <p className="text-[11px] leading-relaxed text-zinc-500">
               {agentBackend === "hermes"
-                ? "Disabled in Hermes connection — Hermes gateway tools and MCP servers handle capabilities."
-                : "Enable tools the model can use during conversation. All off by default to keep responses fast and local."}
+                ? "Hermes owns its tools, MCP servers, web access, and media capabilities. Vokel displays returned artifacts without duplicating them."
+                : "LM Studio owns model tools, MCP servers, web access, and media capabilities. Vokel displays artifacts returned by the active endpoint without bundling provider APIs. Platform-managed MCP execution needs the LM Studio native integration route."}
             </p>
-
-            <div className="space-y-2">
-              {([
-                { key: "web" as const, label: "Web Search", icon: Globe, state: toolWebEnabled, setter: setToolWebEnabled, desc: "Search the web for current information" },
-                { key: "image" as const, label: "Image Search", icon: Image, state: toolImageEnabled, setter: setToolImageEnabled, desc: "Find images from Unsplash" },
-                { key: "gif" as const, label: "GIF Search", icon: Clapperboard, state: toolGifEnabled, setter: setToolGifEnabled, desc: "Find animated GIFs from Giphy" },
-              ] as const).map(({ label, icon: Icon, state, setter, desc }) => (
-                <button
-                  key={label}
-                  type="button"
-                  role="switch"
-                  aria-checked={state}
-                  disabled={isSessionActive || agentBackend === "hermes"}
-                  onClick={() => setter((v) => !v)}
-                  className="touch-button vokel-panel-subtle w-full rounded-2xl px-4 py-2.5 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
-                >
-                  <span className="flex items-center justify-between gap-4">
-                    <span>
-                      <span className="flex items-center gap-1.5 font-bold text-zinc-300 font-mono uppercase">
-                        <Icon className="w-3.5 h-3.5 text-purple-400" />
-                        {label}
-                      </span>
-                      <span className="block mt-0.5 leading-normal text-[11px]">{desc}</span>
-                    </span>
-                    <span className="flex shrink-0 flex-col items-end gap-1">
-                      <span className="text-[10px] font-mono uppercase text-zinc-500">
-                        {state ? "On" : "Off"}
-                      </span>
-                      <span className="recall-switch" data-enabled={state}>
-                        <span className="recall-knob" />
-                      </span>
-                    </span>
-                  </span>
-                </button>
-              ))}
-            </div>
           </div>
 
           {/* Model Configuration / Settings */}
@@ -1569,6 +1563,15 @@ function App() {
           {/* Waveform visualizer (detailed audio pipeline) */}
           <WaveformVisualizer status={status} volume={isStreaming ? micVolume : 0} />
 
+          <LiveVisionPanel
+            lmStudioUrl={lmStudioUrl}
+            lmStudioModel={lmStudioModel}
+            voiceContextEnabled={visionVoiceEnabled}
+            voiceContextFrame={voiceVisionFrame}
+            onVoiceContextEnabledChange={handleVisionVoiceEnabledChange}
+            onSelectedDeviceChange={handleVisionDeviceChange}
+          />
+
           {/* Near-transcript session controls (UI-1) */}
           <div className="vokel-panel rounded-2xl p-3 sm:p-4 sticky top-20 z-20">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1586,6 +1589,8 @@ function App() {
                     ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
                     : sessionStateLabel === "listening"
                       ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
+                      : sessionStateLabel === "capturing_vision"
+                        ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
                       : sessionStateLabel === "generating" || sessionStateLabel === "speaking"
                         ? "border-blue-500/25 bg-blue-500/10 text-blue-300"
                         : "border-zinc-800 bg-zinc-950 text-zinc-500"

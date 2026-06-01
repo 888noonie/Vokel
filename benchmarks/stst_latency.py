@@ -10,7 +10,6 @@ from typing import Any
 from vokel.config import LmStudioConfig
 from vokel.engine import ConversationEngine
 from vokel.events import TextDeltaEvent
-from vokel.web_search import create_default_registry
 from vokel.inference import ChatMessage, LocalInferenceClient
 from vokel.playback import PlaybackSink, build_playback_sink
 from vokel.progress import ConsoleProgressObserver
@@ -92,7 +91,7 @@ async def run_engine_benchmark(
     trace = trace or LatencyTrace()
     if progress and own_trace:
         trace.add_observer(ConsoleProgressObserver())
-    engine = ConversationEngine(llm=llm, playback=playback, trace=trace, echo_tokens=False, tool_registry=create_default_registry())
+    engine = ConversationEngine(llm=llm, playback=playback, trace=trace, echo_tokens=False)
     await engine.start()
     try:
         await engine.run_turns(producer, asr=asr, max_turns=1)

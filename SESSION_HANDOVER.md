@@ -11,7 +11,7 @@ This session tightened the boundary between the Vokel engine and the intelligenc
 The useful framing for tomorrow:
 
 - **Vokel engine:** owns voice capture, playback, interruption, routing, consent, audit, transcript display, Media Cards, and speech sanitization.
-- **LM Studio intelligence plugin:** local OpenAI-compatible model path. Vokel may provide deterministic local tools when enabled.
+- **LM Studio intelligence plugin:** local OpenAI-compatible model path. LM Studio owns configured platform capabilities.
 - **Hermes intelligence plugin:** external agent path. Hermes owns reasoning, memory, and tools; Vokel exposes state, cues, cancellation, consent, and audit.
 
 The implementation is not a full plugin system yet, but the code now points in that direction through backend capabilities, explicit tool activity events, and cleaner routing signals.
@@ -25,7 +25,8 @@ The implementation is not a full plugin system yet, but the code now points in t
 - Extended the shared tool activity contract so backends are told not to print serialized tool calls and not to infer new image/GIF/web searches from praise, thanks, or brief feedback.
 - Hermes HTTP and WebSocket clients now surface tool activity as structured events.
 - Hermes startup now checks that the configured model can actually stream text, not just that the gateway is reachable.
-- Built-in/local mode keeps Vokel-owned deterministic tools behind the existing `ToolRegistry`.
+- Built-in/local mode no longer bundles provider-specific tools. LM Studio owns
+  its configured tools and MCP services.
 
 ### Voice-Loop Hardening
 
@@ -69,4 +70,3 @@ Recommended next slice:
 The product test remains unchanged:
 
 > You speak. It answers. You interrupt. It stops. It listens again. No button.
-

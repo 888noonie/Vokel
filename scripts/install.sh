@@ -44,7 +44,7 @@ python -m scripts.download_models --minimal || true
 if [ ! -f ".env" ]; then
     echo "📝 Creating .env from template..."
     cp .env.example .env
-    echo "✏️  Please edit .env with your API keys (LM_STUDIO_URL, SerpApi, etc.)"
+    echo "✏️  Please edit .env with your local LM Studio settings."
 fi
 
 echo

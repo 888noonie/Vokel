@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import re
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Literal
 
@@ -46,6 +47,7 @@ class ConversationEngine:
         tool_registry: ToolRegistry | None = None,
         enabled_tools: set[str] | None = None,
         agent_mode: AgentMode = "builtin",
+        visual_context_provider: Callable[[str], Awaitable[str | None]] | None = None,
     ):
         resolved_agent = agent if agent is not None else llm
         if resolved_agent is None or playback is None:
@@ -63,6 +65,7 @@ class ConversationEngine:
         self.enabled_tools: set[str] = (
             enabled_tools if enabled_tools is not None and agent_mode == "builtin" else set()
         )
+        self.visual_context_provider = visual_context_provider if agent_mode == "builtin" else None
         self.history: list[ChatMessage] = [{"role": "system", "content": self.config.system_prompt}]
         self._playback_queue: asyncio.Queue[str] = asyncio.Queue()
         self._current_generation: asyncio.Task[None] | None = None
@@ -118,6 +121,14 @@ class ConversationEngine:
                 self.trace.reset()
             self.trace.mark("utterance_ignored", reason="ambiguous_filler", text=user_text)
             return
+        if self.visual_context_provider:
+            image_data_url = await self.visual_context_provider(user_text)
+            if image_data_url is not None:
+                if image_data_url:
+                    await self.submit_visual_turn(user_text, image_data_url, reset_trace=reset_trace)
+                else:
+                    await self._submit_visual_capture_failure(user_text, reset_trace=reset_trace)
+                return
         await self.interrupt()
         if reset_trace:
             self.trace.reset()
@@ -128,6 +139,53 @@ class ConversationEngine:
         self.history.append({"role": "user", "content": user_text})
         self._trim_history()
         self._current_generation = asyncio.create_task(self._generate_reply(user_text, memory_context))
+        await self._current_generation
+
+    async def _submit_visual_capture_failure(self, user_text: str, *, reset_trace: bool) -> None:
+        await self.interrupt()
+        if reset_trace:
+            self.trace.reset()
+        reply = "I couldn't capture a camera frame, so I can't answer that visual question yet."
+        self.trace.mark("turn_submitted", chars=len(user_text), visual_context=True)
+        self.trace.mark("visual_context_unavailable")
+        self.history.append({"role": "user", "content": user_text})
+        self.history.append({"role": "assistant", "content": reply})
+        self._trim_history()
+        await self._playback_queue.put(reply)
+        self.trace.mark("generation_finished", chars=len(reply), text=reply)
+
+    async def submit_visual_turn(
+        self,
+        user_text: str,
+        image_data_url: str,
+        reset_trace: bool = True,
+    ) -> None:
+        """Submit one local camera frame with the current spoken question."""
+        if self.agent_mode != "builtin":
+            raise RuntimeError("Visual turns are only available for the built-in LM Studio route.")
+        await self.interrupt()
+        if reset_trace:
+            self.trace.reset()
+        self.trace.mark("turn_submitted", chars=len(user_text), visual_context=True)
+        self.trace.mark("visual_context_attached", chars=len(image_data_url))
+        memory_context = await self._retrieve_memory_context(user_text)
+        self.history.append({"role": "user", "content": user_text})
+        self._trim_history()
+        visual_message: ChatMessage = {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+                {"type": "text", "text": user_text},
+            ],
+        }
+        self._current_generation = asyncio.create_task(
+            self._generate_reply(
+                user_text,
+                memory_context,
+                current_user_message=visual_message,
+                allow_tools=False,
+            )
+        )
         await self._current_generation
 
     async def submit_auto_followup(self) -> None:
@@ -199,7 +257,14 @@ class ConversationEngine:
         await self.playback.stop()
         self.trace.mark("playback_stop_requested")
 
-    async def _generate_reply(self, user_text: str, memory_context: str = "") -> None:
+    async def _generate_reply(
+        self,
+        user_text: str,
+        memory_context: str = "",
+        *,
+        current_user_message: ChatMessage | None = None,
+        allow_tools: bool = True,
+    ) -> None:
         chunker = PhraseChunker()
         assistant_text: list[str] = []
         saw_token = False
@@ -211,7 +276,7 @@ class ConversationEngine:
         try:
             media_result = ""
             search_evidence = ""
-            if self.agent_mode == "builtin":
+            if self.agent_mode == "builtin" and allow_tools:
                 media_result = (
                     await self._maybe_run_required_gif_search(user_text)
                     or await self._maybe_run_required_image_search(user_text)
@@ -268,7 +333,7 @@ class ConversationEngine:
                 await self._record_memory_turn(user_text, full_reply)
                 return
 
-            if self.agent_mode == "builtin":
+            if self.agent_mode == "builtin" and allow_tools:
                 search_evidence = await self._maybe_run_required_web_search(user_text)
             if search_evidence:
                 async for event in self.agent.stream_chat(
@@ -310,10 +375,15 @@ class ConversationEngine:
 
             while True:
                 tool_calls_made = []
-                messages = self._messages_for_generation(memory_context, user_text)
+                messages = self._messages_for_generation(
+                    memory_context,
+                    user_text,
+                    current_user_message=current_user_message,
+                    include_tools=allow_tools,
+                )
                 tools = (
                     self.tool_registry.get_all_schemas()
-                    if self.agent_mode == "builtin" and self.tool_registry
+                    if self.agent_mode == "builtin" and self.tool_registry and allow_tools
                     else None
                 )
 
@@ -981,7 +1051,14 @@ class ConversationEngine:
         except Exception as exc:
             self.trace.mark("memory_write_failed", error=str(exc))
 
-    def _messages_for_generation(self, memory_context: str, user_text: str) -> list[ChatMessage]:
+    def _messages_for_generation(
+        self,
+        memory_context: str,
+        user_text: str,
+        *,
+        current_user_message: ChatMessage | None = None,
+        include_tools: bool = True,
+    ) -> list[ChatMessage]:
         if self.agent_mode == "hermes":
             return [
                 {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT},
@@ -996,7 +1073,10 @@ class ConversationEngine:
             memory_message: ChatMessage = {"role": "system", "content": memory_context}
             messages = system + [memory_message] + rest
 
-        if self.tool_registry:
+        if current_user_message is not None and messages[-1]["role"] == "user":
+            messages[-1] = current_user_message
+
+        if self.tool_registry and include_tools:
             tool_names = ", ".join(s["function"]["name"] for s in self.tool_registry.get_all_schemas())
             if tool_names:
                 instruction = (

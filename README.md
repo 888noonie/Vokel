@@ -52,7 +52,7 @@ latency-traced:
 
 1. **Capture** — microphone via Sherpa-ONNX VAD, or typed text
 2. **ASR** — offline SenseVoice or streaming Zipformer transcription
-3. **Engine** — agent reasoning loop with tool registry, memory retrieval, and LLM streaming
+3. **Engine** — agent reasoning loop with memory retrieval, capability telemetry, and LLM streaming
 4. **Phrase chunking** — split streamed tokens into speakable phrases with TTS sanitization
 5. **Playback** — Kokoro ONNX synthesis with barge-in cancellation (0.1 ms stop)
 
@@ -62,48 +62,20 @@ Vokel currently has two reasoning modes:
 
 | Mode | Reasoning owner | Tool owner | Best for |
 | --- | --- | --- | --- |
-| **Built-in** | Local OpenAI-compatible model through `LocalInferenceClient` | Vokel `ToolRegistry` | Private local chat, deterministic search/media tools, offline-first experimentation |
+| **Built-in** | Local OpenAI-compatible model through `LocalInferenceClient` | LM Studio platform | Private local chat, local vision, and LM Studio-managed capabilities |
 | **Hermes** | Hermes API Server | Hermes | Speaking directly with a richer external agent stack while keeping Vokel's voice, interruption, and consent layer |
 
-In Hermes mode, Vokel does not duplicate Hermes tools. Hermes may be backed by
-XAI/Grok, OpenRouter, LM Studio, or another provider depending on the user's
-Hermes configuration. Vokel only needs the Hermes gateway URL and optional API
-key.
+Vokel does not bundle provider-specific web, image, or GIF APIs. LM Studio owns
+the capabilities configured in LM Studio. Hermes owns the capabilities
+configured behind its gateway. Vokel keeps the voice loop cancellable, shows
+tool activity, and renders media cards when a backend returns a real URL or
+artifact. A prose-only claim that an image was fetched is displayed as prose;
+it cannot produce an image card.
 
-## Agent Tools
-
-Vokel extends small local models with a tool registry that runs external
-capabilities without leaking implementation into the model itself.
-
-### Web Search
-
-The `search_web` tool uses SerpApi's DuckDuckGo engine. When you ask for news,
-weather, or current information, Vokel runs the search deterministically, then
-hands the evidence to the local model with a strict synthesis prompt so it
-answers conversationally from real data. If API snippets are too thin, Vokel
-scrapes the top result page for actual article content. A fallback path returns
-the raw numbered evidence if the model still hedges.
-
-### Image Search
-
-The `search_image` tool uses the Unsplash API. Say "show me an image of a
-golden retriever" and a landscape photograph appears inline in the transcript
-with proper attribution, while the TTS gives a brief spoken introduction.
-
-### GIF Search
-
-The `search_gif` tool uses the Giphy API. Ask for a GIF, reaction, meme, or
-sticker and an animated GIF appears in a compact card in the transcript. The
-detection is context-aware: if the conversation is already about GIFs, short
-follow-ups like "another one" or "cats" automatically trigger a new search.
-
-The TTS speaks a playful one-liner ("Ha! Check this out!") instead of reading
-GIF metadata aloud.
-
-Search evidence stays visible in the transcript with clickable links. The TTS
-path receives cleaned speech text that strips Markdown markers, raw URLs, and
-formatting symbols before synthesis. The web UI plays a quiet tonal cue while
-an external tool call is running.
+LM Studio's OpenAI-compatible chat endpoint streams model output but does not
+execute LM Studio MCP integrations on Vokel's behalf. Platform-managed MCP
+execution requires LM Studio's native chat integration path and configured MCP
+servers. See [docs/agent-tools.md](docs/agent-tools.md) for the boundary.
 
 ## Latency Scoreboard
 
@@ -204,6 +176,44 @@ Or without installing the console script:
 ```bash
 python3 -m vokel.cli "Give me a compact assessment of the live voice loop architecture."
 ```
+
+## Live Local Vision Experiment
+
+The first camera slice captures a fresh local webcam frame, sends it directly to
+the loaded LM Studio vision model, prints the description and timings, then
+discards the frame. On the measured Pop!_OS development laptop, `/dev/video4` is
+the USB PlayStation Eye and `/dev/video0` is the built-in color webcam.
+
+List the detected V4L2 camera nodes:
+
+```bash
+python3 scripts/live_vision.py --list-cameras
+```
+
+Analyze one PlayStation Eye frame with the loaded LM Studio model:
+
+```bash
+python3 scripts/live_vision.py --device /dev/video4 --count 1
+```
+
+Run continuously until `Ctrl-C`:
+
+```bash
+python3 scripts/live_vision.py --device /dev/video4
+```
+
+The web dashboard also exposes the same guarded path in its **Local Vision
+Window**. Use **Look Now** for one frame, or **Start Live** for a visibly armed
+loop with an immediate stop control. Arm **Camera Questions in Voice Loop** to
+attach one fresh local frame when a spoken turn asks something grounded such as
+"what am I holding?" or "what can you see?". Camera questions bypass image
+search so the model answers from the captured frame rather than fetching a web
+image.
+
+This proof uses GStreamer's `gst-launch-1.0` command and keeps images local by
+default. Add `--keep-frame /tmp/vokel-latest.jpg` only when an inspectable
+retained frame is useful. A non-loopback `--url` also requires the explicit
+`--allow-external` flag before a camera frame can leave the machine.
 
 To capture one microphone turn, install the optional audio dependencies and provide
 Sherpa-ONNX model paths:

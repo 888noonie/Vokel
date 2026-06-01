@@ -183,13 +183,13 @@ Dashboard:
 - Agent Console tab
 - Previous Chats tab backed by browser-local snapshots
 
-Local tool layer:
+Platform capability boundary:
 
-- `ToolRegistry` / `ToolDefinition`
-- Deterministic forced tool execution for small local models
-- Web search with SerpApi DuckDuckGo and page scraping fallback
-- Image search with Unsplash
-- GIF search with Giphy
+- LM Studio owns tools and MCP integrations in the local-model connection.
+- Hermes owns tools and MCP integrations behind the Hermes gateway.
+- Vokel does not bundle provider-specific web, image, or GIF APIs.
+- `ToolRegistry` / `ToolDefinition` remain an explicit extension point, not a
+  default provider bundle.
 - Rich transcript rendering for media
 - Caption-only TTS path with `sanitize_for_speech`
 - Tool-call audio cue
@@ -198,8 +198,8 @@ Local tool layer:
 
 Exit check:
 
-- local model cannot falsely claim it browsed
-- raw evidence fallback includes clickable links
+- prose-only backend claims never become fake media cards
+- returned URLs and media artifacts remain visible and clickable
 - TTS never reads raw Markdown, URLs, media metadata, or attribution aloud
 
 ## Completed: Agent Extension First Slice
@@ -222,7 +222,7 @@ Goal: let Vokel serve as the voice front-end for an external agent stack.
 
 Boundary:
 
-- In Built-in mode, Vokel-owned tools are available to the local model.
+- In LM Studio mode, LM Studio-owned tools are not duplicated inside Vokel.
 - In Hermes mode, Hermes-owned tools are not duplicated inside Vokel.
 - Agent handoff must be visible and reversible.
 
@@ -244,7 +244,6 @@ Goal: reduce time from fresh `git clone` to a working voice turn (especially `vo
 - `scripts/__init__.py` — makes `python -m scripts.download_models` reliable
 - `.env.example` — declared surface of truth with practical keys:
   - `LM_STUDIO_URL` / `LM_STUDIO_MODEL`
-  - `SERPAPI_API_KEY`, `UNSPLASH_ACCESS_KEY`, `GIPHY_API_KEY`
   - `MEMORY_ENABLED`, `MEMORY_DB_PATH`
   - `DEFAULT_VOICE`, `SPEED`
 - README.md Quickstart now leads with the clone + `chmod +x scripts/install.sh` + `./scripts/install.sh` flow, followed by immediate next steps (`vokel --web` or a direct voice prompt)
@@ -431,6 +430,26 @@ Deferred:
 - screen context
 - file write-back
 - continuous ambient capture
+
+Measured local camera experiment (June 1, 2026):
+
+- Pop!_OS exposes the USB PlayStation Eye as `/dev/video4` through the `ov534`
+  V4L2 driver. It captures 640x480 YUY2 frames at 60 FPS.
+- The built-in color webcam is exposed as `/dev/video0`.
+- `scripts/live_vision.py` is the first local-only probe: capture a fresh frame,
+  submit it to LM Studio as OpenAI-compatible image input, print description and
+  latency, then discard the frame unless retention is explicitly selected.
+- The web dashboard exposes the same guarded path as a Local Vision Window with
+  explicit Look Now, Start Live, and Stop Live controls. No camera capture starts
+  on page load.
+- Camera Questions in Voice Loop is separately armed by the user. Deterministic
+  visual phrases such as "what am I holding?" capture one fresh local frame and
+  attach it to the current LM Studio turn. Search tools are omitted from that
+  visual turn so camera questions cannot drift into unrelated media lookup.
+- The loaded Gemma 4 E4B GGUF was validated against a real PlayStation Eye
+  frame. Google documents Gemma 4 as multimodal with text and image input across
+  all model sizes, and recommends placing image content before text in the
+  prompt. LM Studio documents Chat Completions support for text and images.
 
 Exit check:
 

@@ -6,7 +6,6 @@ import sys
 
 from .config import LmStudioConfig
 from .engine import ConversationEngine
-from .web_search import create_default_registry
 from .inference import LocalInferenceClient
 from .playback import KOKORO_VOICES, build_playback_sink, available_playback_backends
 from .turns import AudioTurn
@@ -47,7 +46,7 @@ async def run_tui(args: argparse.Namespace) -> None:
     sink = build_playback_sink(args.playback, voice=args.voice, speed=args.tts_speed)
 
     async with LocalInferenceClient(lm_config) as llm:
-        engine = ConversationEngine(llm=llm, playback=sink, echo_tokens=True, tool_registry=create_default_registry())
+        engine = ConversationEngine(llm=llm, playback=sink, echo_tokens=True)
         await engine.start()
         try:
             await engine.run_turns(producer=producer, asr=asr, max_turns=None)
