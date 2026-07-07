@@ -148,6 +148,7 @@ function App() {
     musicalMode: false,
     musicalBpm: 90,
     musicalLevel: 1,
+    musicalStyle: "beat",
   });
   const savedConnection = loadJson<{ provider?: LlmConnection }>(connectionPrefsKey, {
     provider: "jan",
@@ -175,6 +176,14 @@ function App() {
   const [musicalLevel, setMusicalLevel] = useState(
     typeof savedVoicePrefs.musicalLevel === "number" ? savedVoicePrefs.musicalLevel : 1
   );
+  const [musicalStyle, setMusicalStyle] = useState<"beat" | "metronome">(
+    savedVoicePrefs.musicalStyle === "metronome" ? "metronome" : "beat"
+  );
+  const [musicalTrackInfo, setMusicalTrackInfo] = useState<{
+    durationSeconds: number;
+    samples: number;
+  } | null>(null);
+  const [musicalTrackUploading, setMusicalTrackUploading] = useState(false);
   const [beatPulse, setBeatPulse] = useState<BeatPulse | null>(null);
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
@@ -213,6 +222,8 @@ function App() {
   const toolCueActiveRef = useRef(false);
   const messagesRef = useRef<Message[]>([]);
   const musicalLevelSendTimerRef = useRef<number | null>(null);
+  const musicalTrackSlotRef = useRef<string | null>(null);
+  const tapTempoTimesRef = useRef<number[]>([]);
 
   // Hook for audio streaming and local queue scheduling in browser mode
   const { startStreaming, stopStreaming, isStreaming, micVolume } = useAudioStreamer({
@@ -236,9 +247,20 @@ function App() {
         musicalMode,
         musicalBpm,
         musicalLevel,
+        musicalStyle,
       })
     );
-  }, [playbackBackend, voice, ttsSpeed, outputMuted, outputVolume, musicalMode, musicalBpm, musicalLevel]);
+  }, [
+    playbackBackend,
+    voice,
+    ttsSpeed,
+    outputMuted,
+    outputVolume,
+    musicalMode,
+    musicalBpm,
+    musicalLevel,
+    musicalStyle,
+  ]);
 
   const sendMusicalLevel = useCallback(
     (level: number) => {
@@ -266,6 +288,75 @@ function App() {
     },
     [sendMusicalLevel]
   );
+
+  const sendMusicalNudge = useCallback(
+    (ms: number) => {
+      if (!socketRef.current || !isConnected || !isSessionActive) return;
+      socketRef.current.send(
+        JSON.stringify({
+          type: "set_musical_nudge",
+          ms,
+        })
+      );
+    },
+    [isConnected, isSessionActive]
+  );
+
+  const handleTapTempo = useCallback(() => {
+    const now = performance.now();
+    const times = tapTempoTimesRef.current;
+    times.push(now);
+    if (times.length > 5) {
+      times.shift();
+    }
+    if (times.length < 2) {
+      return;
+    }
+    const intervals: number[] = [];
+    for (let index = 1; index < times.length; index += 1) {
+      intervals.push(times[index] - times[index - 1]);
+    }
+    const recent = intervals.slice(-4);
+    const averageMs = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+    const nextBpm = Math.round(60000 / averageMs);
+    setMusicalBpm(Math.min(160, Math.max(60, Math.round(nextBpm / 5) * 5)));
+  }, []);
+
+  const uploadMusicalTrack = useCallback(async (file: File) => {
+    const slot = musicalTrackSlotRef.current;
+    if (!slot) {
+      setError("Connect to Vokel before uploading a backing track.");
+      return;
+    }
+    setMusicalTrackUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const response = await fetch(`/api/musical/track?slot=${encodeURIComponent(slot)}`, {
+        method: "POST",
+        body: form,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof payload.detail === "string"
+            ? payload.detail
+            : "Backing track upload failed"
+        );
+      }
+      setMusicalTrackInfo({
+        durationSeconds: Number(payload.duration_seconds ?? 0),
+        samples: Number(payload.samples ?? 0),
+      });
+      setError(null);
+    } catch (uploadError) {
+      const message =
+        uploadError instanceof Error ? uploadError.message : "Backing track upload failed";
+      setError(message);
+    } finally {
+      setMusicalTrackUploading(false);
+    }
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem(previousChatsKey, JSON.stringify(previousChats));
@@ -414,6 +505,9 @@ function App() {
           }
 
           case "execute_state":
+            if (typeof data.musical_track_slot === "string") {
+              musicalTrackSlotRef.current = data.musical_track_slot;
+            }
             setExecuteState({
               armed: Boolean(data.armed),
               risk: String(data.risk ?? "none"),
@@ -694,6 +788,7 @@ function App() {
         musical_mode: musicalMode,
         musical_bpm: musicalBpm,
         musical_level: musicalLevel,
+        musical_style: musicalStyle,
       })
     );
   };
@@ -1613,25 +1708,93 @@ function App() {
               </button>
 
               {musicalMode && (
-                <div>
-                  <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
-                    Tempo: {musicalBpm} BPM
-                  </label>
-                  <input
-                    type="range"
-                    min="60"
-                    max="160"
-                    step="5"
-                    disabled={
-                      isSessionActive ||
-                      mode !== "local" ||
-                      (playbackBackend !== "kokoro" && playbackBackend !== "spd-say")
-                    }
-                    value={musicalBpm}
-                    onChange={(e) => setMusicalBpm(Number(e.target.value))}
-                    className="w-full accent-purple-500"
-                  />
-                </div>
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                      Backing Style
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(["beat", "metronome"] as const).map((style) => (
+                        <button
+                          key={style}
+                          type="button"
+                          disabled={
+                            isSessionActive ||
+                            mode !== "local" ||
+                            (playbackBackend !== "kokoro" && playbackBackend !== "spd-say")
+                          }
+                          onClick={() => setMusicalStyle(style)}
+                          className={`touch-button rounded-xl border px-3 py-2 text-xs font-mono uppercase transition ${
+                            musicalStyle === style
+                              ? "border-purple-500/50 bg-purple-500/10 text-purple-200"
+                              : "border-zinc-850 bg-zinc-950 text-zinc-400 hover:bg-zinc-900"
+                          }`}
+                        >
+                          {style === "beat" ? "Beat Loop" : "Metronome"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between gap-3">
+                      <label className="block text-xs font-bold text-zinc-500 font-mono uppercase">
+                        Tempo: {musicalBpm} BPM
+                      </label>
+                      <button
+                        type="button"
+                        disabled={
+                          isSessionActive ||
+                          mode !== "local" ||
+                          (playbackBackend !== "kokoro" && playbackBackend !== "spd-say")
+                        }
+                        onClick={handleTapTempo}
+                        className="touch-button rounded-xl border border-zinc-850 bg-zinc-950 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wide text-zinc-300 transition hover:bg-zinc-900 disabled:opacity-55"
+                      >
+                        Tap
+                      </button>
+                    </div>
+                    <input
+                      type="range"
+                      min="60"
+                      max="160"
+                      step="5"
+                      disabled={
+                        isSessionActive ||
+                        mode !== "local" ||
+                        (playbackBackend !== "kokoro" && playbackBackend !== "spd-say")
+                      }
+                      value={musicalBpm}
+                      onChange={(e) => setMusicalBpm(Number(e.target.value))}
+                      className="w-full accent-purple-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                      Load Track
+                    </label>
+                    <input
+                      type="file"
+                      accept="audio/*,.mp3,.wav,.flac,.aac,.ogg,.m4a"
+                      disabled={musicalTrackUploading || !isConnected}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) {
+                          void uploadMusicalTrack(file);
+                        }
+                        event.currentTarget.value = "";
+                      }}
+                      className="block w-full text-xs text-zinc-400 file:mr-3 file:rounded-lg file:border-0 file:bg-purple-500/15 file:px-3 file:py-2 file:font-mono file:text-[10px] file:uppercase file:text-purple-200"
+                    />
+                    {musicalTrackInfo && (
+                      <p className="mt-1.5 text-[10px] font-mono text-zinc-500">
+                        Loaded {musicalTrackInfo.durationSeconds.toFixed(1)}s ·{" "}
+                        {musicalTrackInfo.samples.toLocaleString()} samples
+                      </p>
+                    )}
+                  </div>
+                </>
               )}
 
               <div>
@@ -1827,6 +1990,7 @@ function App() {
             beatPulse={beatPulse}
             musicalLevel={musicalLevel}
             onMusicalLevelChange={handleMusicalLevelChange}
+            onMusicalNudge={sendMusicalNudge}
           />
 
           {/* Waveform visualizer (detailed audio pipeline) */}

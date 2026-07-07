@@ -4,14 +4,16 @@ import asyncio
 import json
 import logging
 import re
+import secrets
+import tempfile
 import traceback
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Literal
 
 import numpy as np
-from dataclasses import replace
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,7 +27,13 @@ from .audio import (
     create_streaming_asr,
 )
 from .audio.beatclock import BeatClock, ClockStopped
-from .audio.beattrack import BeatTrackPlayer
+from .audio.beattrack import (
+    MAX_TRACK_DECODE_SECONDS,
+    BeatTrackPlayer,
+    MusicalTrackDecodeError,
+    SAMPLE_RATE as MUSICAL_TRACK_SAMPLE_RATE,
+    decode_audio_file,
+)
 from .audio.quantized_sink import QuantizedPlaybackSink
 from .auto_followup import (
     AutoFollowupScheduler,
@@ -80,6 +88,34 @@ logger = logging.getLogger("vokel.web")
 _FRONTEND_DIST = Path("frontend/dist")
 _FAVICON_PATH = _FRONTEND_DIST / "favicon.svg"
 _VISION_CAPTURE_LOCK = asyncio.Lock()
+MAX_MUSICAL_TRACK_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_MUSICAL_TRACK_SAMPLES = 15 * 60 * MUSICAL_TRACK_SAMPLE_RATE
+_MUSICAL_STYLES = frozenset({"beat", "metronome"})
+
+
+@dataclass
+class _MusicalTrackSlot:
+    buffer: np.ndarray | None = None
+    player: BeatTrackPlayer | None = None
+
+
+_musical_track_slots: dict[str, _MusicalTrackSlot] = {}
+
+
+def _parse_musical_style(raw: Any) -> Literal["beat", "metronome"]:
+    style = str(raw or "beat").strip().lower()
+    if style in _MUSICAL_STYLES:
+        return style  # type: ignore[return-value]
+    return "beat"
+
+
+def _apply_musical_track_buffer(slot_id: str, samples: np.ndarray) -> None:
+    slot = _musical_track_slots.get(slot_id)
+    if slot is None:
+        return
+    slot.buffer = samples
+    if slot.player is not None:
+        slot.player.load_buffer(samples)
 
 
 VoiceSessionCommand = Literal["pause", "resume"]
@@ -322,6 +358,65 @@ async def analyze_vision(request: VisionAnalyzeRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/api/musical/track")
+async def upload_musical_track(
+    slot: str = Query(..., min_length=8, max_length=64),
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    if slot not in _musical_track_slots:
+        raise HTTPException(status_code=404, detail="Unknown musical track slot")
+
+    upload_path: Path | None = None
+    try:
+        chunks: list[bytes] = []
+        total_bytes = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if total_bytes > MAX_MUSICAL_TRACK_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Backing track upload exceeds the 50 MB limit",
+                )
+            chunks.append(chunk)
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="Backing track upload is empty")
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".upload") as handle:
+            for chunk in chunks:
+                handle.write(chunk)
+            upload_path = Path(handle.name)
+
+        try:
+            samples = await asyncio.to_thread(
+                decode_audio_file,
+                upload_path,
+                timeout_seconds=MAX_TRACK_DECODE_SECONDS,
+            )
+        except MusicalTrackDecodeError as exc:
+            message = str(exc)
+            if "ffmpeg is required" in message:
+                raise HTTPException(status_code=503, detail=message) from exc
+            raise HTTPException(status_code=400, detail=message) from exc
+
+        if samples.size > MAX_MUSICAL_TRACK_SAMPLES:
+            raise HTTPException(
+                status_code=400,
+                detail="Decoded backing track exceeds the 15 minute limit",
+            )
+
+        _apply_musical_track_buffer(slot, samples)
+        return {
+            "duration_seconds": float(samples.size) / MUSICAL_TRACK_SAMPLE_RATE,
+            "samples": int(samples.size),
+        }
+    finally:
+        if upload_path is not None:
+            upload_path.unlink(missing_ok=True)
+
+
 @app.websocket("/api/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -359,6 +454,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     musical_clock: BeatClock | None = None
     beat_track: BeatTrackPlayer | None = None
     beat_forward_task: asyncio.Task[None] | None = None
+    musical_track_slot = secrets.token_hex(16)
+    _musical_track_slots[musical_track_slot] = _MusicalTrackSlot()
 
     async def teardown_musical_mode() -> None:
         nonlocal musical_clock, beat_track, beat_forward_task
@@ -372,6 +469,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if musical_clock is not None:
             await musical_clock.stop()
             musical_clock = None
+        track_slot = _musical_track_slots.get(musical_track_slot)
+        if track_slot is not None:
+            track_slot.player = None
         if beat_track is not None:
             await beat_track.stop()
             beat_track = None
@@ -465,6 +565,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "armed": execute_armed,
             "risk": execute_risk,
             "detail": detail,
+            "musical_track_slot": musical_track_slot,
         })
 
     async def request_browser_frame(timeout: float = 3.0) -> str | None:
@@ -980,6 +1081,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             )
                         except (TypeError, ValueError):
                             musical_level = 1.0
+                        musical_style = _parse_musical_style(data.get("musical_style"))
                         voice_loop_config: VoiceLoopConfig | None = None
                         if (
                             musical_mode
@@ -989,7 +1091,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             beat_track = BeatTrackPlayer(
                                 bpm=musical_bpm,
                                 level=musical_level,
+                                style=musical_style,
                             )
+                            track_slot = _musical_track_slots.get(musical_track_slot)
+                            if track_slot is not None:
+                                track_slot.player = beat_track
+                                if track_slot.buffer is not None:
+                                    beat_track.load_buffer(track_slot.buffer)
                             await musical_clock.start()
                             await beat_track.start()
                             playback = QuantizedPlaybackSink(
@@ -1275,6 +1383,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         except (TypeError, ValueError):
                             pass
 
+                elif msg_type == "set_musical_nudge":
+                    if beat_track is not None:
+                        try:
+                            beat_track.nudge_cursor(float(data.get("ms", 0)))
+                        except (TypeError, ValueError):
+                            pass
+
                 elif msg_type == "interrupt":
                     if engine:
                         await send_agent_event("interrupt_requested", detail="Barge-in requested", backend="vokel")
@@ -1531,6 +1646,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if local_loop_task and not local_loop_task.done():
             local_loop_task.cancel()
         await teardown_musical_mode()
+        _musical_track_slots.pop(musical_track_slot, None)
         if engine:
             await engine.close()
         if agent_client:

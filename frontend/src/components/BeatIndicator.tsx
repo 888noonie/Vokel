@@ -13,6 +13,7 @@ interface BeatIndicatorProps {
   beatPulse: BeatPulse | null;
   musicalLevel: number;
   onMusicalLevelChange: (level: number) => void;
+  onMusicalNudge: (ms: number) => void;
   beatsPerBar?: number;
 }
 
@@ -22,6 +23,7 @@ export function BeatIndicator({
   beatPulse,
   musicalLevel,
   onMusicalLevelChange,
+  onMusicalNudge,
   beatsPerBar = 4,
 }: BeatIndicatorProps) {
   const [inPocket, setInPocket] = useState(false);
@@ -102,6 +104,28 @@ export function BeatIndicator({
           className="w-full accent-purple-500"
           aria-label="Backing beat level"
         />
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-1.5 text-[10px] font-mono uppercase tracking-wide text-zinc-500">
+          Track Align
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => onMusicalNudge(-25)}
+            className="touch-button rounded-xl border border-zinc-850 bg-zinc-950 px-3 py-2 text-xs font-mono uppercase text-zinc-300 transition hover:bg-zinc-900"
+          >
+            -25ms
+          </button>
+          <button
+            type="button"
+            onClick={() => onMusicalNudge(25)}
+            className="touch-button rounded-xl border border-zinc-850 bg-zinc-950 px-3 py-2 text-xs font-mono uppercase text-zinc-300 transition hover:bg-zinc-900"
+          >
+            +25ms
+          </button>
+        </div>
       </div>
     </div>
   );
