@@ -84,6 +84,44 @@ class SpeechSanitizerTests(unittest.TestCase):
             "Done.",
         )
 
+    def test_removes_analyze_image_tool_calls_with_spaces(self):
+        self.assertEqual(
+            sanitize_for_speech(
+                'Looking. <|tool_call>call: analyze_image{image_description:<|"|>steaming mug<|"|>}<tool_call|> You are holding a mug.'
+            ),
+            "Looking. You are holding a mug.",
+        )
+
+    def test_removes_unclosed_parenthesised_tool_call(self):
+        # A 4B model emitted exactly this (no closing token, () args) and it was spoken aloud.
+        self.assertEqual(sanitize_for_speech("<|tool_call>call: camera.capture()"), "")
+        self.assertEqual(
+            sanitize_for_speech("Sure. <|tool_call>call: camera.capture() Let me look."),
+            "Sure. Let me look.",
+        )
+
+    def test_strips_orphaned_tool_call_delimiters(self):
+        self.assertEqual(sanitize_for_speech("Hold on <tool_call|> there."), "Hold on there.")
+        self.assertEqual(
+            sanitize_for_speech("I will call you back later."),
+            "I will call you back later.",
+        )
+
+    def test_removes_no_opener_describe_image_tool_call(self):
+        # A 4B model emitted exactly this for "what's in my hand" — no opener, {} args,
+        # nested <|"|> quote tokens, and a trailing closer. The opener-required pattern
+        # used to let the whole thing be spoken aloud.
+        leak = 'call:describe_image{image_base64:<|"|>[Image data provided]<|"|>}<tool_call|>'
+        self.assertEqual(sanitize_for_speech(leak), "")
+        self.assertEqual(sanitize_for_speech(f"What am I holding. {leak}"), "What am I holding.")
+
+    def test_keeps_natural_call_colon_phrasing(self):
+        # "call:" without an opener or args is ordinary speech, not a tool call.
+        self.assertEqual(
+            sanitize_for_speech("Give me a call: tomorrow works best."),
+            "Give me a call: tomorrow works best.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

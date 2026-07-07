@@ -31,6 +31,7 @@ class HermesClientTests(unittest.IsolatedAsyncioTestCase):
         config = HermesConfig(base_url="http://127.0.0.1:8642")
         message = format_gateway_error(config, httpx.ConnectError("All connection attempts failed"))
         self.assertIn("Cannot reach Hermes gateway", message)
+        self.assertIn("API_SERVER_KEY", message)
         self.assertIn("hermes gateway run", message)
 
     async def test_stream_chat_yields_text_deltas(self) -> None:
@@ -251,9 +252,12 @@ class HermesCameraFrameTransportTests(unittest.IsolatedAsyncioTestCase):
 
         _ = [e async for e in client.stream_chat(msgs)]
 
-        # Assert the posted payload contained camera_frame with all required fields
         call = mock_http.stream.call_args
         payload = call.kwargs["json"]
+        self.assertIsInstance(payload["input"], list)
+        content = payload["input"][0]["content"]
+        self.assertEqual(content[0]["image_url"]["url"], "data:image/jpeg;base64,TESTFRAME")
+        self.assertEqual(content[1]["text"], "what is this?")
         self.assertIn("camera_frame", payload)
         cf = payload["camera_frame"]
         self.assertEqual(cf["data_url"], "data:image/jpeg;base64,TESTFRAME")
@@ -316,6 +320,9 @@ class HermesCameraFrameTransportTests(unittest.IsolatedAsyncioTestCase):
         second_url = second_call.args[1]
         self.assertIn("/v1/chat/completions", second_url)
         second_payload = second_call.kwargs["json"]
+        user_content = second_payload["messages"][-1]["content"]
+        self.assertEqual(user_content[0]["image_url"]["url"], "data:image/jpeg;base64,TESTFRAME")
+        self.assertEqual(user_content[1]["text"], "what is this?")
         self.assertIn("camera_frame", second_payload)
         cf = second_payload["camera_frame"]
         self.assertEqual(cf["data_url"], "data:image/jpeg;base64,TESTFRAME")
@@ -363,6 +370,17 @@ class HermesCameraFrameTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cf["captured_at"], "2026-06-02T12:34:56Z")
         self.assertEqual(cf["consent"], "explicit_visual_context_for_turn")
         self.assertEqual(cf["contract"], "hermes_camera_frame_v1")
+
+    async def test_hermes_ws_connect_refused_raises_inference_error(self) -> None:
+        from vokel.inference import InferenceError
+
+        # Nothing is listening on this port; connect must surface an actionable error
+        # instead of a raw OSError, and must fail fast (short timeout).
+        client = HermesWebSocketClient("ws://127.0.0.1:9", timeout=2.0)
+        with self.assertRaises(InferenceError) as ctx:
+            await client.connect()
+        self.assertIn("ws://127.0.0.1:9", str(ctx.exception))
+        self.assertIsNone(client.ws)
 
 
 if __name__ == "__main__":

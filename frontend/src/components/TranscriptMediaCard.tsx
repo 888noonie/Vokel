@@ -15,7 +15,9 @@ const kindMeta = {
 
 function connectionLabel(connection?: MediaCard["connection"]): string | null {
   if (!connection) return null;
-  return connection === "hermes" ? "Hermes" : "LM Studio";
+  if (connection === "hermes") return "Hermes";
+  if (connection === "jan") return "Jan";
+  return "LM Studio";
 }
 
 function routeLabel(route?: MediaCard["route"]): string | null {

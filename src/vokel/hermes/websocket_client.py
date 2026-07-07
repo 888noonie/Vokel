@@ -43,23 +43,47 @@ class HermesWebSocketClient(AgentBackend):
         if self.ws:
             return
 
-        self.ws = await websockets.connect(
-            self.url,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=5,
-        )
+        try:
+            self.ws = await asyncio.wait_for(
+                websockets.connect(
+                    self.url,
+                    ping_interval=20,
+                    ping_timeout=10,
+                    close_timeout=5,
+                    open_timeout=self.timeout,
+                ),
+                timeout=self.timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise InferenceError(
+                f"Timed out connecting to the Hermes agent at {self.url} "
+                f"after {self.timeout:.0f}s. Confirm the agent socket is running."
+            ) from exc
+        except (OSError, websockets.exceptions.WebSocketException) as exc:
+            raise InferenceError(
+                f"Cannot reach the Hermes agent at {self.url}: {exc}. "
+                "Start the agent and confirm the WebSocket endpoint is listening."
+            ) from exc
 
-        # Proven handshake (exact pattern validated on Pixel 8 Pro)
-        await self._send({"type": "ping"})
-        pong = await self._recv()
-        if pong.get("type") != "pong":
-            raise InferenceError(f"Expected pong during handshake, got: {pong}")
+        try:
+            # Proven handshake (exact pattern validated on Pixel 8 Pro)
+            await self._send({"type": "ping"})
+            pong = await self._recv()
+            if pong.get("type") != "pong":
+                raise InferenceError(f"Expected pong during handshake, got: {pong}")
 
-        await self._send({"type": "get_schema"})
-        schema = await self._recv()
-        if schema.get("type") != "tool_schema":
-            raise InferenceError(f"Expected tool_schema during handshake, got: {schema}")
+            await self._send({"type": "get_schema"})
+            schema = await self._recv()
+            if schema.get("type") != "tool_schema":
+                raise InferenceError(f"Expected tool_schema during handshake, got: {schema}")
+        except InferenceError:
+            await self.close()
+            raise
+        except (asyncio.TimeoutError, OSError, websockets.exceptions.WebSocketException) as exc:
+            await self.close()
+            raise InferenceError(
+                f"Hermes agent handshake at {self.url} failed: {exc}"
+            ) from exc
 
         self.remote_schema = schema
 
@@ -134,17 +158,29 @@ class HermesWebSocketClient(AgentBackend):
                     break
                 elif msg["type"] == "error":
                     raise InferenceError(msg.get("message", "Unknown error from Hermes agent"))
+        except websockets.exceptions.ConnectionClosed as exc:
+            if not self._cancel_event.is_set():
+                raise InferenceError(
+                    f"Hermes agent connection at {self.url} dropped mid-turn: {exc}"
+                ) from exc
         finally:
             self._current_turn_id = None
 
     async def cancel_active(self) -> None:
-        if self._current_turn_id:
-            await self._send({"type": "cancel", "turn_id": self._current_turn_id})
-            self._cancel_event.set()
+        self._cancel_event.set()
+        if self._current_turn_id and self.ws is not None:
+            try:
+                await self._send({"type": "cancel", "turn_id": self._current_turn_id})
+            except (OSError, websockets.exceptions.WebSocketException):
+                # Socket already gone; cancellation is best-effort.
+                pass
 
     async def close(self) -> None:
         if self.ws:
-            await self.ws.close()
+            try:
+                await self.ws.close()
+            except (OSError, websockets.exceptions.WebSocketException):
+                pass
             self.ws = None
         self.remote_schema = None
         self._current_turn_id = None

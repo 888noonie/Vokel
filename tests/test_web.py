@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -33,8 +33,7 @@ def test_root_endpoint_returns_api_status() -> None:
 @patch("vokel.web.list_camera_devices")
 def test_vision_camera_discovery_prefers_ps3_eye(mock_list_cameras: MagicMock) -> None:
     mock_list_cameras.return_value = [
-        CameraDevice(path="/dev/video0", name="Integrated Camera"),
-        CameraDevice(path="/dev/video4", name="gspca main driver"),
+        CameraDevice(path="/dev/video0", name="Built-in webcam (color)"),
     ]
 
     response = TestClient(app).get("/api/vision/cameras")
@@ -42,12 +41,32 @@ def test_vision_camera_discovery_prefers_ps3_eye(mock_list_cameras: MagicMock) -
     assert response.status_code == 200
     assert response.json() == {
         "cameras": [
-            {"path": "/dev/video0", "name": "Integrated Camera"},
-            {"path": "/dev/video4", "name": "gspca main driver"},
+            {"path": "/dev/video0", "name": "Built-in webcam (color)"},
         ],
-        "default_device": "/dev/video4",
+        "default_device": "/dev/video0",
         "local_only": True,
     }
+
+
+@patch("vokel.web.capture_camera_frame")
+@patch("vokel.web.list_camera_devices")
+def test_vision_snapshot_returns_preview_frame(
+    mock_list_cameras: MagicMock,
+    mock_capture: MagicMock,
+) -> None:
+    from vokel.vision import CapturedVisionFrame
+
+    mock_list_cameras.return_value = [CameraDevice(path="/dev/video0", name="Integrated Camera")]
+    mock_capture.return_value = CapturedVisionFrame(
+        device="/dev/video0",
+        image_data_url="data:image/jpeg;base64,anBlZw==",
+        capture_seconds=0.2,
+    )
+
+    response = TestClient(app).get("/api/vision/snapshot", params={"device": "/dev/video0"})
+
+    assert response.status_code == 200
+    assert response.json()["image_data_url"].startswith("data:image/jpeg;base64,")
 
 
 @patch("vokel.web.analyze_camera_frame")
@@ -91,6 +110,7 @@ def test_vision_analysis_rejects_external_endpoint() -> None:
     assert "loopback" in response.json()["detail"]
 
 
+@patch("vokel.web.check_local_health", new_callable=AsyncMock)
 @patch("vokel.web.LocalInferenceClient")
 @patch("vokel.web.create_streaming_asr")
 @patch("vokel.web.KokoroPlaybackSink")
@@ -98,6 +118,7 @@ def test_websocket_browser_mode_flow(
     mock_kokoro_class: MagicMock,
     mock_create_asr: MagicMock,
     mock_lm_client_class: MagicMock,
+    mock_check_local_health: AsyncMock,
 ) -> None:
     # Setup mocks
     mock_llm = MagicMock()
@@ -125,7 +146,7 @@ def test_websocket_browser_mode_flow(
     # Mock Kokoro and its create_stream
     mock_kokoro = MagicMock()
     mock_kokoro_class.return_value = mock_kokoro
-    
+
     async def dummy_kokoro_stream(*args: any, **kwargs: any):
         yield np.zeros(1000, dtype=np.float32), 24000
 
@@ -166,6 +187,7 @@ def test_websocket_browser_mode_flow(
         assert res_stopped["type"] == "session_stopped"
 
 
+@patch("vokel.web.check_local_health", new_callable=AsyncMock)
 @patch("vokel.web.LocalInferenceClient")
 @patch("vokel.web.create_streaming_asr")
 @patch("vokel.web.KokoroPlaybackSink")
@@ -173,6 +195,7 @@ def test_websocket_barge_in_bypasses(
     mock_kokoro_class: MagicMock,
     mock_create_asr: MagicMock,
     mock_lm_client_class: MagicMock,
+    mock_check_local_health: AsyncMock,
 ) -> None:
     # Setup mocks for LLM and ASR
     mock_llm = MagicMock()
@@ -194,7 +217,7 @@ def test_websocket_barge_in_bypasses(
             "type": "start_session",
             "mode": "browser",
         })
-        
+
         receive_expected(websocket, ("session_started",))
         receive_expected(websocket, ("status",))
 

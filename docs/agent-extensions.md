@@ -22,9 +22,11 @@ its own memory, tools, and provider configuration.
 ```bash
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8642
-# Optional for local development. If set, enter the same value in Vokel.
 API_SERVER_KEY=change-me-local-dev
 ```
+
+`API_SERVER_KEY` is required when `API_SERVER_ENABLED=true`. Without it, the gateway
+process may run but the API server refuses to start and port 8642 stays closed.
 
 2. Start the gateway (leave this running in its own terminal):
 
@@ -34,8 +36,9 @@ hermes gateway run
 
 You should see: `[API Server] API server listening on http://127.0.0.1:8642`
 
-3. In the Vokel dashboard, choose **Agent Extension -> HERMES**, set the gateway URL
-   (default `http://127.0.0.1:8642`), and enter the same API key if you set one.
+3. In the Vokel dashboard, choose **Connection -> HERMES**, set the gateway URL
+   (default `http://127.0.0.1:8642`), and paste the same `API_SERVER_KEY` into
+   Vokel's Hermes API Key field (saved in browser localStorage).
 
 Verify from another terminal:
 
@@ -61,9 +64,10 @@ in inference.py + injection in the two clients).
   (proven by engine test).
 - Metadata (source, captured_at, consent, contract) is carried; no hard-coded
   device.
-- Gateway-side changes still required on Hermes (accept the payload on both
-  transports, forward frame to model, return artifacts as real markdown/URLs
-  only for Vokel cards). Vokel side complete.
+- HTTP gateway: Vokel embeds the frame in OpenAI multimodal `input` (`image_url` +
+  text) and also attaches `camera_frame` metadata for audit. Hermes gateway
+  already normalizes this shape for Grok and other vision-capable providers.
+- WebSocket path still uses the explicit `camera_frame` block on `start_turn`.
 
 Android path remains open (CameraX will emit equivalent VisualContext).
 

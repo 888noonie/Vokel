@@ -2,11 +2,15 @@ import json
 import unittest
 from unittest.mock import MagicMock
 
+from vokel.config import LmStudioConfig
 from vokel.events import TextDeltaEvent, ToolActivityEvent
 from vokel.inference import (
     InferenceError,
     _parse_native_chat_stream,
+    check_local_health,
+    derive_models_url,
     extract_camera_frame,
+    format_local_error,
     parse_sse_delta,
 )
 from vokel.vision import VisualContext
@@ -23,6 +27,92 @@ class InferenceParsingTests(unittest.TestCase):
 
     def test_ignores_non_data_lines(self):
         self.assertIsNone(parse_sse_delta(": keepalive"))
+
+
+class LocalConnectionHardeningTests(unittest.TestCase):
+    def test_derive_models_url_from_chat_completions(self):
+        self.assertEqual(
+            derive_models_url("http://127.0.0.1:6767/v1/chat/completions"),
+            "http://127.0.0.1:6767/v1/models",
+        )
+
+    def test_derive_models_url_fallback(self):
+        self.assertEqual(
+            derive_models_url("http://127.0.0.1:6767"),
+            "http://127.0.0.1:6767/v1/models",
+        )
+
+    def test_format_connect_error_is_actionable(self):
+        import httpx
+
+        cfg = LmStudioConfig(url="http://127.0.0.1:6767/v1/chat/completions")
+        msg = format_local_error(cfg, httpx.ConnectError("Connection refused"))
+        self.assertIn("127.0.0.1:6767", msg)
+        self.assertIn("jan-voice", msg)
+
+    def test_format_read_timeout_mentions_model(self):
+        import httpx
+
+        cfg = LmStudioConfig(model="my-model")
+        msg = format_local_error(cfg, httpx.ReadTimeout("slow"))
+        self.assertIn("my-model", msg)
+
+    def test_format_401_gives_key_hint(self):
+        import httpx
+
+        cfg = LmStudioConfig()
+        request = httpx.Request("POST", cfg.url)
+        response = httpx.Response(401, request=request)
+        msg = format_local_error(cfg, httpx.HTTPStatusError("401", request=request, response=response))
+        self.assertIn("401", msg)
+        self.assertIn("VOKEL_LLM_API_KEY", msg)
+
+
+class LocalHealthPreflightTests(unittest.IsolatedAsyncioTestCase):
+    async def test_health_translates_connect_error(self):
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock
+
+        cfg = LmStudioConfig(url="http://127.0.0.1:6767/v1/chat/completions")
+        client = MagicMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
+
+        with self.assertRaises(InferenceError) as ctx:
+            await check_local_health(cfg, client)
+        self.assertIn("Cannot reach the local LLM", str(ctx.exception))
+        client.get.assert_awaited_once()
+        # Preflight must target /v1/models, never the chat endpoint.
+        self.assertEqual(client.get.await_args.args[0], "http://127.0.0.1:6767/v1/models")
+
+    async def test_health_passes_when_models_ok(self):
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock
+
+        cfg = LmStudioConfig()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        client = MagicMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=response)
+
+        await check_local_health(cfg, client)  # should not raise
+
+
+class LocalStreamErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_chat_translates_connect_error(self):
+        import httpx
+        from unittest.mock import MagicMock
+
+        from vokel.inference import LocalInferenceClient
+
+        cfg = LmStudioConfig(url="http://127.0.0.1:6767/v1/chat/completions")
+        client = MagicMock(spec=httpx.AsyncClient)
+        client.stream = MagicMock(side_effect=httpx.ConnectError("refused"))
+
+        local = LocalInferenceClient(cfg, client=client)
+        with self.assertRaises(InferenceError) as ctx:
+            async for _ in local.stream_chat([{"role": "user", "content": "hi"}]):
+                pass
+        self.assertIn("Cannot reach the local LLM", str(ctx.exception))
 
 
 if __name__ == "__main__":

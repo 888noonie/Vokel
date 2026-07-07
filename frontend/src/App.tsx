@@ -38,7 +38,24 @@ import type { VisionFrame } from "./components/LiveVisionPanel";
 
 type Mode = "local" | "browser";
 type AgentBackend = "builtin" | "hermes";
+type LlmConnection = "jan" | "lmstudio" | "hermes";
 type Status = "idle" | "listening" | "generating" | "speaking" | "paused" | "capturing_vision";
+
+const JAN_MODEL = "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive";
+const LMSTUDIO_MODEL = "gemma-4-e4b-uncensored-hauhaucs-aggressive";
+
+const LLM_PRESETS = {
+  jan: {
+    url: "http://127.0.0.1:6767/v1/chat/completions",
+    model: JAN_MODEL,
+    label: "Jan",
+  },
+  lmstudio: {
+    url: "http://localhost:1234/v1/chat/completions",
+    model: LMSTUDIO_MODEL,
+    label: "LM Studio",
+  },
+} as const;
 
 interface MemoryFact {
   id: number;
@@ -80,6 +97,7 @@ const kokoroVoices = [
 const voicePrefsKey = "vokel.voicePrefs.v1";
 const previousChatsKey = "vokel.previousChats.v1";
 const hermesPrefsKey = "vokel.hermesPrefs.v1";
+const connectionPrefsKey = "vokel.connectionPrefs.v1";
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -126,8 +144,18 @@ function App() {
     outputMuted: false,
     outputVolume: 1,
   });
-  const [lmStudioUrl, setLmStudioUrl] = useState("http://localhost:1234/v1/chat/completions");
-  const [lmStudioModel, setLmStudioModel] = useState("gemma-4-e4b-it-ultra-uncensored-heretic");
+  const savedConnection = loadJson<{ provider?: LlmConnection }>(connectionPrefsKey, {
+    provider: "jan",
+  });
+  const initialConnection: LlmConnection =
+    savedConnection.provider === "lmstudio" || savedConnection.provider === "hermes"
+      ? savedConnection.provider
+      : "jan";
+  const initialPreset =
+    initialConnection === "lmstudio" ? LLM_PRESETS.lmstudio : LLM_PRESETS.jan;
+
+  const [lmStudioUrl, setLmStudioUrl] = useState<string>(initialPreset.url);
+  const [lmStudioModel, setLmStudioModel] = useState<string>(initialPreset.model);
   const [useLmNativeMcp, setUseLmNativeMcp] = useState(false);
   const [lmMcpIntegrations, setLmMcpIntegrations] = useState("");  // comma sep e.g. mcp/playwright,mcp/fetch
   const [playbackBackend, setPlaybackBackend] = useState(savedVoicePrefs.playbackBackend);
@@ -139,7 +167,10 @@ function App() {
   const [memoryEnabled, setMemoryEnabled] = useState(false);
   const [autoFollowupEnabled, setAutoFollowupEnabled] = useState(true);
   const [autoFollowupSeconds, setAutoFollowupSeconds] = useState(8);
-  const [agentBackend, setAgentBackend] = useState<AgentBackend>("builtin");
+  const [llmConnection, setLlmConnection] = useState<LlmConnection>(initialConnection);
+  const [agentBackend, setAgentBackend] = useState<AgentBackend>(
+    initialConnection === "hermes" ? "hermes" : "builtin"
+  );
   const savedHermesPrefs = loadJson(hermesPrefsKey, {
     url: "http://127.0.0.1:8642",
     apiKey: "",
@@ -152,10 +183,16 @@ function App() {
   const [activeHermesSessionId, setActiveHermesSessionId] = useState<string | null>(null);
   const [probeStatus, setProbeStatus] = useState<"idle" | "probing" | "ok" | "error">("idle");
   const [visionVoiceEnabled, setVisionVoiceEnabled] = useState(false);
-  const [visionDevice, setVisionDevice] = useState("/dev/video4");
+  const [visionDevice, setVisionDevice] = useState("/dev/video0");
   const [voiceVisionFrame, setVoiceVisionFrame] = useState<VisionFrame | null>(null);
+  const [liveVisionControl, setLiveVisionControl] = useState<{
+    action: "start_live" | "stop_live";
+    nonce: number;
+  } | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
+  // Set by LiveVisionPanel; grabs one JPEG from the live preview on the server's request.
+  const capturePreviewFrameRef = useRef<(() => string | null) | null>(null);
   const previewingVoiceRef = useRef<string | null>(null);
   const previewAudioContextRef = useRef<AudioContext | null>(null);
   const previewPlaybackTimeRef = useRef(0);
@@ -176,7 +213,13 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(
       voicePrefsKey,
-      JSON.stringify({ playbackBackend, voice, ttsSpeed, outputMuted, outputVolume })
+      JSON.stringify({
+        playbackBackend,
+        voice,
+        ttsSpeed,
+        outputMuted,
+        outputVolume,
+      })
     );
   }, [playbackBackend, voice, ttsSpeed, outputMuted, outputVolume]);
 
@@ -522,6 +565,32 @@ function App() {
             });
             break;
 
+          case "vision_context_state":
+            // Backend armed Camera Questions from a spoken command ("watch me"/"shoot").
+            setVisionVoiceEnabled(Boolean(data.enabled));
+            if (typeof data.device === "string" && data.device) {
+              setVisionDevice(data.device);
+            }
+            break;
+
+          case "vision_control":
+            // "action"/"cut" drive the Local Vision Window's live AI watch loop.
+            if (data.action === "start_live" || data.action === "stop_live") {
+              setLiveVisionControl({ action: data.action, nonce: Date.now() });
+            }
+            break;
+
+          case "request_camera_frame": {
+            // Server wants a still while the browser holds the camera: grab one from
+            // the live preview (null if no preview is active) and send it back.
+            const grab = capturePreviewFrameRef.current;
+            const imageDataUrl = grab ? grab() : null;
+            socketRef.current?.send(
+              JSON.stringify({ type: "camera_frame", image_data_url: imageDataUrl })
+            );
+            break;
+          }
+
           case "auto_followup":
             break;
 
@@ -798,10 +867,32 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  const activeConnectionLabel = agentBackend === "hermes" ? "Hermes" : "LM Studio";
-  const routeLabel = agentBackend === "hermes" ? "External agent" : "Local model";
-  const toolsOwnerLabel = agentBackend === "hermes" ? "Hermes-owned" : "LM Studio-owned";
-  const privacyLabel = agentBackend === "hermes" ? "External agent active" : "Local";
+  const selectLlmConnection = (provider: LlmConnection) => {
+    setLlmConnection(provider);
+    localStorage.setItem(connectionPrefsKey, JSON.stringify({ provider }));
+    if (provider === "hermes") {
+      setAgentBackend("hermes");
+      return;
+    }
+    setAgentBackend("builtin");
+    const preset = LLM_PRESETS[provider];
+    setLmStudioUrl(preset.url);
+    setLmStudioModel(preset.model);
+    if (provider === "jan") {
+      setUseLmNativeMcp(false);
+    }
+  };
+
+  const activeConnectionLabel =
+    llmConnection === "hermes" ? "Hermes" : llmConnection === "jan" ? "Jan" : "LM Studio";
+  const routeLabel = llmConnection === "hermes" ? "External agent" : "Local model";
+  const toolsOwnerLabel =
+    llmConnection === "hermes"
+      ? "Hermes-owned"
+      : llmConnection === "jan"
+        ? "Jan-owned"
+        : "LM Studio-owned";
+  const privacyLabel = llmConnection === "hermes" ? "External agent active" : "Local";
   const voiceLabel =
     playbackBackend === "kokoro"
       ? `Local Kokoro (${voice})`
@@ -831,6 +922,18 @@ function App() {
       : status === "speaking"
         ? "Speaking response"
         : null;
+  const platformCapabilitiesCopy =
+    llmConnection === "hermes"
+      ? "Hermes owns reasoning, tools, and memory. Vokel is the voice front-end."
+      : llmConnection === "jan"
+        ? "Jan serves the model on this machine. Vokel handles speech; Jan handles text generation."
+        : "LM Studio serves the model and can own MCP tools. Enable native MCP below if you use ~/.lmstudio/mcp.json.";
+  const llmEndpointLabel =
+    llmConnection === "jan"
+      ? "Jan API Endpoint"
+      : llmConnection === "lmstudio"
+        ? "LM Studio API Endpoint"
+        : "LLM API Endpoint";
 
   return (
     <div className="app-shell min-h-screen text-zinc-100 flex flex-col font-sans selection:bg-purple-500/30 selection:text-purple-200">
@@ -884,7 +987,7 @@ function App() {
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
               <Cpu className="w-3 h-3 text-purple-400" />
-              {agentBackend === "hermes" ? "HERMES" : "LM STUDIO"}
+              {llmConnection === "hermes" ? "HERMES" : llmConnection === "jan" ? "JAN" : "LM STUDIO"}
             </span>
             <span className="flex items-center gap-1">
               <Wrench className="w-3 h-3 text-indigo-400" />
@@ -1089,17 +1192,27 @@ function App() {
               <span>Connection</span>
             </h2>
 
-            <p className="text-[11px] leading-relaxed text-zinc-500 mb-4">
-              LM Studio connection uses your local LM Studio endpoint directly. Hermes connection keeps Vokel as the voice front-end while Hermes owns
-              reasoning, memory, and tools.
+            <p className="text-[11px] leading-relaxed text-zinc-500 mb-3">
+              Vokel handles voice. Pick where the model runs.
             </p>
 
-            <div className="flex rounded-xl bg-zinc-950 p-1 border border-zinc-900 mb-4">
+            <div className="grid grid-cols-3 gap-1.5 rounded-xl bg-zinc-950 p-1 border border-zinc-900 mb-3">
               <button
                 disabled={isSessionActive}
-                onClick={() => setAgentBackend("builtin")}
-                className={`touch-button flex-1 rounded-lg text-xs font-semibold font-mono transition-all duration-200 ${
-                  agentBackend === "builtin"
+                onClick={() => selectLlmConnection("jan")}
+                className={`touch-button rounded-lg py-2 px-1 text-[10px] font-bold font-mono tracking-wide transition-all ${
+                  llmConnection === "jan"
+                    ? "bg-zinc-900 text-purple-400 border border-zinc-800 shadow"
+                    : "text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
+                }`}
+              >
+                JAN
+              </button>
+              <button
+                disabled={isSessionActive}
+                onClick={() => selectLlmConnection("lmstudio")}
+                className={`touch-button rounded-lg py-2 px-1 text-[10px] font-bold font-mono tracking-wide transition-all ${
+                  llmConnection === "lmstudio"
                     ? "bg-zinc-900 text-purple-400 border border-zinc-800 shadow"
                     : "text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
                 }`}
@@ -1108,9 +1221,9 @@ function App() {
               </button>
               <button
                 disabled={isSessionActive}
-                onClick={() => setAgentBackend("hermes")}
-                className={`touch-button flex-1 rounded-lg text-xs font-semibold font-mono transition-all duration-200 ${
-                  agentBackend === "hermes"
+                onClick={() => selectLlmConnection("hermes")}
+                className={`touch-button rounded-lg py-2 px-1 text-[10px] font-bold font-mono tracking-wide transition-all ${
+                  llmConnection === "hermes"
                     ? "bg-zinc-900 text-purple-400 border border-zinc-800 shadow"
                     : "text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
                 }`}
@@ -1119,7 +1232,14 @@ function App() {
               </button>
             </div>
 
-            {agentBackend === "hermes" && (
+            {llmConnection === "jan" && (
+              <p className="text-[10px] leading-relaxed text-zinc-600 font-mono mb-3">
+                Preset: <span className="text-zinc-500">127.0.0.1:6767</span> · Gemma via{" "}
+                <span className="text-zinc-500">~/.local/bin/jan-voice</span>
+              </p>
+            )}
+
+            {llmConnection === "hermes" && (
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
@@ -1135,7 +1255,7 @@ function App() {
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
-                    API Key (optional)
+                    API Key
                   </label>
                   <input
                     type="password"
@@ -1203,11 +1323,7 @@ function App() {
               <span>Platform Capabilities</span>
             </h2>
 
-            <p className="text-[11px] leading-relaxed text-zinc-500">
-              {agentBackend === "hermes"
-                ? "Hermes owns its tools, MCP servers, web access, and media capabilities. Vokel displays returned artifacts without duplicating them."
-                : "LM Studio owns model tools, MCP servers, web access, and media capabilities. Vokel displays artifacts returned by the active endpoint without bundling provider APIs. Platform-managed MCP execution needs the LM Studio native integration route."}
-            </p>
+            <p className="text-[11px] leading-relaxed text-zinc-500">{platformCapabilitiesCopy}</p>
           </div>
 
           {/* Model Configuration / Settings */}
@@ -1218,13 +1334,15 @@ function App() {
             </h2>
 
             <div className="space-y-4">
+              {llmConnection !== "hermes" && (
+                <>
               <div>
                 <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
-                  LM Studio Client Endpoint
+                  {llmEndpointLabel}
                 </label>
                 <input
                   type="text"
-                  disabled={isSessionActive || agentBackend === "hermes"}
+                  disabled={isSessionActive}
                   value={lmStudioUrl}
                   onChange={(e) => setLmStudioUrl(e.target.value)}
                   className="vokel-field"
@@ -1237,25 +1355,25 @@ function App() {
                 </label>
                 <input
                   type="text"
-                  disabled={isSessionActive || agentBackend === "hermes"}
+                  disabled={isSessionActive}
                   value={lmStudioModel}
                   onChange={(e) => setLmStudioModel(e.target.value)}
                   className="vokel-field"
                 />
               </div>
 
-              {/* LM Studio native MCP adapter (smallest slice per build brief) */}
+              {llmConnection === "lmstudio" && (
               <div className="pt-1">
                 <label className="flex items-center gap-2 text-xs font-mono text-zinc-400 mb-1.5">
                   <input
                     type="checkbox"
-                    disabled={isSessionActive || agentBackend === "hermes"}
+                    disabled={isSessionActive}
                     checked={useLmNativeMcp}
                     onChange={(e) => setUseLmNativeMcp(e.target.checked)}
                   />
                   Use native /api/v1/chat (MCP integrations from ~/.lmstudio/mcp.json)
                 </label>
-                {useLmNativeMcp && agentBackend !== "hermes" && (
+                {useLmNativeMcp && (
                   <input
                     type="text"
                     disabled={isSessionActive}
@@ -1266,6 +1384,9 @@ function App() {
                   />
                 )}
               </div>
+              )}
+                </>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
@@ -1591,10 +1712,17 @@ function App() {
           <WaveformVisualizer status={status} volume={isStreaming ? micVolume : 0} />
 
           <LiveVisionPanel
-            lmStudioUrl={lmStudioUrl}
-            lmStudioModel={lmStudioModel}
+            visionUrl={llmConnection === "hermes" ? hermesUrl : lmStudioUrl}
+            visionModel={llmConnection === "hermes" ? hermesModel : lmStudioModel}
+            visionApiKey={llmConnection === "hermes" ? hermesApiKey : ""}
+            visionBackend={llmConnection === "hermes" ? "hermes" : "local"}
             voiceContextEnabled={visionVoiceEnabled}
             voiceContextFrame={voiceVisionFrame}
+            sessionStatus={status}
+            liveControlSignal={liveVisionControl}
+            registerFrameGrabber={(grab) => {
+              capturePreviewFrameRef.current = grab;
+            }}
             onVoiceContextEnabledChange={handleVisionVoiceEnabledChange}
             onSelectedDeviceChange={handleVisionDeviceChange}
           />
@@ -1704,7 +1832,7 @@ function App() {
           <TranscriptStream
             messages={messages}
             status={status}
-            activeConnection={agentBackend === "hermes" ? "hermes" : "lm_studio"}
+            activeConnection={llmConnection === "hermes" ? "hermes" : llmConnection === "jan" ? "jan" : "lm_studio"}
             activeRoute={agentBackend === "hermes" ? "external" : "local"}
             activePrivacy={agentBackend === "hermes" ? "external_active" : "local"}
             activeAction={activeActionLabel}
@@ -1720,7 +1848,7 @@ function App() {
             previousChats={previousChats}
             onRestoreChat={restorePreviousChat}
             onClearPreviousChats={clearPreviousChats}
-            backend={agentBackend}
+            backend={activeConnectionLabel}
             isSessionActive={isSessionActive}
             activeSessionId={activeHermesSessionId}
             events={agentEvents}

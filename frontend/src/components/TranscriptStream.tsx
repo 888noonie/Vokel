@@ -13,7 +13,7 @@ export interface Message {
 interface TranscriptStreamProps {
   messages: Message[];
   status: "idle" | "listening" | "generating" | "speaking" | "paused" | "capturing_vision";
-  activeConnection: "lm_studio" | "hermes";
+  activeConnection: "jan" | "lm_studio" | "hermes";
   activeRoute: "local" | "external";
   activePrivacy?: "local" | "external_active" | "unknown";
   activeAction?: string | null;
@@ -48,7 +48,7 @@ function isLikelyPlainImageUrl(target: string): boolean {
 
 function inferMediaCards(
   text: string,
-  activeConnection: "lm_studio" | "hermes",
+  activeConnection: "jan" | "lm_studio" | "hermes",
   activeRoute: "local" | "external",
   activePrivacy: "local" | "external_active" | "unknown"
 ): MediaCard[] {

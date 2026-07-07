@@ -20,7 +20,7 @@ from vokel.vision import (
 )
 
 DEFAULT_URL = "http://127.0.0.1:1234/v1/chat/completions"
-DEFAULT_MODEL = "gemma-4-e4b-it-ultra-uncensored-heretic"
+DEFAULT_MODEL = "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q5_K_M"
 
 
 def build_parser() -> argparse.ArgumentParser:

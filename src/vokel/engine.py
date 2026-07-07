@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import inspect
 import json
 import re
@@ -20,18 +21,51 @@ from .text_chunker import PhraseChunker
 from .tools import ToolRegistry
 from .auto_followup import AUTO_FOLLOWUP_NUDGE
 from .turns import AsrEngine, TurnProducer
-from .vision import VisualContext
+from .vision import SpokenReply, VisualContext
 from typing import Any
 
 
 AgentMode = Literal["builtin", "hermes"]
 MEDIA_MARKDOWN_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)]+)\)")
 TOOL_CALL_MARKER_RE = re.compile(r"\[tool_call:([^\]]+)\]")
+# A serialized tool call the model leaked as plain text. Small local models emit
+# two shapes, and the closer-required pattern we used before let the second leak:
+#   1. `<|tool_call>call: camera.capture()`                  — opener, optional body, no closer
+#   2. `call:describe_image{image_base64:<|"|>...}<tool_call|>` — no opener, {} body, closer
+# Branch 1 keys on the opener, so a bare opener (and any optional body) is caught.
+# Branch 2 has no opener, so it requires at least one (...)/{...} arg group as the
+# anchor — that keeps natural prose like "give me a call: tomorrow" untouched.
 SERIALIZED_TOOL_CALL_RE = re.compile(
-    r"<\|tool_call\>\s*call:([A-Za-z0-9_.:-]+)(?:\{.*?\})?\s*<tool_call\|>",
+    r"<\|tool_call\|?>\s*"
+    r"(?:call\s*:\s*[\w.:-]+)?"
+    r"(?:\s*(?:\([^)]*\)|\{[^}]*\}))*"
+    r"(?:\s*<\|?/?tool_call\|?>)?"
+    r"|"
+    r"call\s*:\s*[\w.:-]+"
+    r"(?:\s*(?:\([^)]*\)|\{[^}]*\}))+"
+    r"(?:\s*<\|?/?tool_call\|?>)?",
     re.DOTALL,
 )
+# The function name inside a matched tool call, used only for spoken reassurance.
+# Searched within a SERIALIZED match (never the raw token) so prose isn't mined.
+_TOOL_CALL_NAME_RE = re.compile(r"call\s*:\s*([\w.:-]+)")
+# Mop up orphaned delimiters and the stray `<|"|>` quote token the model wraps
+# around base64 image args, so a split or partial emission never reaches output.
+RESIDUAL_TOOL_TOKEN_RE = re.compile(r"<\|?/?tool_call\|?>|<\|[\"']\|>", re.I)
 _PUNCT_ONLY_RE = re.compile(r"^[\s\.\,\!\?\:\;\-\_~…·。！？、]+$")
+
+# Spoken when a visual turn yields only stripped tool-call scaffolding, so an
+# image question never ends in silence (a known small-model failure mode).
+VISUAL_REPLY_FALLBACK = (
+    "Sorry, I had the camera frame but didn't catch a clear answer that time. "
+    "Could you ask me again?"
+)
+# Appended to the prompt that rides with a camera frame, steering small models to
+# answer in words instead of echoing a describe_image / camera tool call.
+VISUAL_ANSWER_DIRECTIVE = (
+    "Look at the attached image and answer in one or two plain spoken sentences. "
+    "Do not output any tool calls, function calls, JSON, or code."
+)
 
 
 class ConversationEngine:
@@ -49,7 +83,10 @@ class ConversationEngine:
         tool_registry: ToolRegistry | None = None,
         enabled_tools: set[str] | None = None,
         agent_mode: AgentMode = "builtin",
-        visual_context_provider: Callable[[str], Awaitable[str | VisualContext | None]] | None = None,
+        visual_context_provider: Callable[
+            [str], Awaitable[str | VisualContext | SpokenReply | None]
+        ]
+        | None = None,
     ):
         resolved_agent = agent if agent is not None else llm
         if resolved_agent is None or playback is None:
@@ -71,7 +108,9 @@ class ConversationEngine:
         # camera_frame payload contract. The provider itself (capture + consent UI) lives
         # in the host layer (web.py) and is passed for both modes.
         self.visual_context_provider = visual_context_provider
-        self.history: list[ChatMessage] = [{"role": "system", "content": self.config.system_prompt}]
+        self.history: list[ChatMessage] = [
+            {"role": "system", "content": self._session_system_prompt()}
+        ]
         self._playback_queue: asyncio.Queue[str] = asyncio.Queue()
         self._current_generation: asyncio.Task[None] | None = None
         self._playback_worker: asyncio.Task[None] | None = None
@@ -85,9 +124,15 @@ class ConversationEngine:
         *,
         queue_reassurance: bool,
     ) -> str:
-        marker_names = TOOL_CALL_MARKER_RE.findall(token)
-        marker_names.extend(SERIALIZED_TOOL_CALL_RE.findall(token))
+        marker_names = list(TOOL_CALL_MARKER_RE.findall(token))
+        for match in SERIALIZED_TOOL_CALL_RE.finditer(token):
+            name_match = _TOOL_CALL_NAME_RE.search(match.group(0))
+            if name_match:
+                marker_names.append(name_match.group(1))
         for tool_name in marker_names:
+            if not tool_name:
+                # A bare opener with no `call: name` carries no tool to reassure about.
+                continue
             self.trace.mark("tool_call_text_suppressed", tool_name=tool_name)
             if queue_reassurance and tool_name not in reassured_tools:
                 reassured_tools.add(tool_name)
@@ -95,6 +140,7 @@ class ConversationEngine:
                 await self._queue_tool_reassurance(tool_name)
         token = TOOL_CALL_MARKER_RE.sub("", token)
         token = SERIALIZED_TOOL_CALL_RE.sub("", token)
+        token = RESIDUAL_TOOL_TOKEN_RE.sub("", token)
         return token
 
     async def start(self) -> None:
@@ -120,7 +166,7 @@ class ConversationEngine:
 
     async def reset_conversation(self) -> None:
         await self.interrupt()
-        self.history = [{"role": "system", "content": self.config.system_prompt}]
+        self.history = [{"role": "system", "content": self._session_system_prompt()}]
         if isinstance(self.agent, HermesAgentClient):
             new_session = self.agent.reset_session()
             self.trace.mark("hermes_session_reset", session_id=new_session)
@@ -149,6 +195,14 @@ class ConversationEngine:
                 self._pending_visual_capture_task = None
 
             if provided is not None:
+                if isinstance(provided, SpokenReply):
+                    # Deterministic camera-control acknowledgement ("watch me", "action",
+                    # "cut"): Vokel speaks the line itself so the model never narrates or
+                    # invents a camera capability.
+                    await self._submit_canned_reply(
+                        user_text, provided.text, reset_trace=reset_trace
+                    )
+                    return
                 if isinstance(provided, VisualContext):
                     vc = provided
                     if vc.data_url:
@@ -156,7 +210,16 @@ class ConversationEngine:
                             user_text, vc.data_url, reset_trace=reset_trace, visual_context=vc
                         )
                     else:
-                        await self._submit_visual_capture_failure(user_text, reset_trace=reset_trace)
+                        reason = (
+                            "not_armed"
+                            if vc.consent == "voice_context_not_armed"
+                            else "capture_failed"
+                        )
+                        await self._submit_visual_capture_failure(
+                            user_text,
+                            reset_trace=reset_trace,
+                            reason=reason,
+                        )
                 elif provided:
                     # backward compat for tests/providers returning plain data_url str
                     await self.submit_visual_turn(user_text, provided, reset_trace=reset_trace)
@@ -175,11 +238,41 @@ class ConversationEngine:
         self._current_generation = asyncio.create_task(self._generate_reply(user_text, memory_context))
         await self._current_generation
 
-    async def _submit_visual_capture_failure(self, user_text: str, *, reset_trace: bool) -> None:
+    async def _submit_canned_reply(
+        self,
+        user_text: str,
+        reply: str,
+        *,
+        reset_trace: bool,
+    ) -> None:
+        """Record the turn and speak a fixed line without calling the model."""
         await self.interrupt()
         if reset_trace:
             self.trace.reset()
-        reply = "I couldn't capture a camera frame, so I can't answer that visual question yet."
+        self.trace.mark("turn_submitted", chars=len(user_text), camera_directive=True)
+        self.history.append({"role": "user", "content": user_text})
+        self.history.append({"role": "assistant", "content": reply})
+        self._trim_history()
+        await self._playback_queue.put(reply)
+        self.trace.mark("generation_finished", chars=len(reply), text=reply)
+
+    async def _submit_visual_capture_failure(
+        self,
+        user_text: str,
+        *,
+        reset_trace: bool,
+        reason: str = "capture_failed",
+    ) -> None:
+        await self.interrupt()
+        if reset_trace:
+            self.trace.reset()
+        if reason == "not_armed":
+            reply = (
+                "I need Camera Questions in Voice Loop turned on before I can look. "
+                "Enable it in the Live Feed panel, then ask again."
+            )
+        else:
+            reply = "I couldn't capture a camera frame, so I can't answer that visual question yet."
         self.trace.mark("turn_submitted", chars=len(user_text), visual_context=True)
         self.trace.mark("visual_context_unavailable")
         self.history.append({"role": "user", "content": user_text})
@@ -220,11 +313,20 @@ class ConversationEngine:
                 "contract": visual_context.contract,
             }
 
+        # Bare commands ("shoot") carry a clean instruction in visual_context.prompt;
+        # spoken questions ("what am I holding?") use the words as the prompt directly.
+        frame_prompt = (
+            visual_context.prompt
+            if visual_context is not None and visual_context.prompt
+            else user_text
+        )
+        # The directive (invisible to the transcript) keeps small models from echoing
+        # a describe_image / camera tool call instead of just answering the question.
         visual_message: ChatMessage = {
             "role": "user",
             "content": [
                 {"type": "image_url", "image_url": img},
-                {"type": "text", "text": user_text},
+                {"type": "text", "text": f"{frame_prompt}\n\n{VISUAL_ANSWER_DIRECTIVE}"},
             ],
         }
         self._current_generation = asyncio.create_task(
@@ -538,19 +640,62 @@ class ConversationEngine:
                     self.trace.mark("first_phrase_queued", chars=len(final_phrase))
                 await self._playback_queue.put(final_phrase)
 
-            reply = "".join(assistant_text).strip()
+            reply = self._strip_serialized_tool_calls("".join(assistant_text).strip())
+            used_visual_fallback = False
+            if not reply and self._is_visual_turn(current_user_message):
+                # The model emitted only tool-call scaffolding (now stripped) instead of
+                # an answer — a known small-model failure when an image is in context.
+                # Speak a graceful fallback rather than going silent on a visual question.
+                reply = VISUAL_REPLY_FALLBACK
+                used_visual_fallback = True
+                self.trace.mark("visual_reply_fallback_used")
+                await self._playback_queue.put(reply)
             if reply:
                 self.history.append({"role": "assistant", "content": reply})
                 self._trim_history()
-            
+
             self.trace.mark("generation_finished", chars=len(reply), text=reply)
-            
-            if reply:
+
+            if reply and not used_visual_fallback:
                 await self._record_memory_turn(user_text, reply)
         except asyncio.CancelledError:
             chunker.reset()
             self.trace.mark("generation_cancelled")
             raise
+
+    @staticmethod
+    def _strip_serialized_tool_calls(text: str) -> str:
+        cleaned = TOOL_CALL_MARKER_RE.sub("", text)
+        cleaned = SERIALIZED_TOOL_CALL_RE.sub("", cleaned)
+        cleaned = RESIDUAL_TOOL_TOKEN_RE.sub("", cleaned)
+        return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+    def _session_system_prompt(self) -> str:
+        """Base system prompt grounded with the real current date.
+
+        A local model has no clock, so without this it confidently guesses the date
+        (the live build answered "today is October 24th, 2024"). Computed when the
+        history is built or reset so each session reflects the actual day.
+        """
+        today = datetime.datetime.now().astimezone()
+        date_line = (
+            f" For reference, today's date is {today.strftime('%A, %B')} {today.day}, "
+            f"{today.year}. Treat this as the authoritative current date and never "
+            "state or guess a different one."
+        )
+        return self.config.system_prompt + date_line
+
+    @staticmethod
+    def _is_visual_turn(current_user_message: ChatMessage | None) -> bool:
+        """True when this turn carried a camera frame (image_url) to the model."""
+        if not current_user_message:
+            return False
+        content = current_user_message.get("content")
+        if not isinstance(content, list):
+            return False
+        return any(
+            isinstance(part, dict) and part.get("type") == "image_url" for part in content
+        )
 
     @staticmethod
     def _first_media_markdown_block(text: str) -> str | None:

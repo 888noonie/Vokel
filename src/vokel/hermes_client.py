@@ -66,6 +66,33 @@ def _extract_system_instructions(messages: Sequence[ChatMessage]) -> str:
     return "\n\n".join(parts)
 
 
+def _camera_frame_metadata(camera_frame: Any) -> dict[str, Any]:
+    return {
+        "data_url": camera_frame.data_url,
+        "source": camera_frame.source,
+        "captured_at": camera_frame.captured_at,
+        "consent": camera_frame.consent,
+        "contract": camera_frame.contract,
+    }
+
+
+def _multimodal_user_content(user_input: str, camera_frame: Any | None) -> str | list[dict[str, Any]]:
+    """OpenAI-compatible user content Hermes gateway already normalizes."""
+    if camera_frame is None:
+        return user_input
+    return [
+        {"type": "image_url", "image_url": {"url": camera_frame.data_url}},
+        {"type": "text", "text": user_input},
+    ]
+
+
+def _responses_input(user_input: str, camera_frame: Any | None) -> str | list[dict[str, Any]]:
+    content = _multimodal_user_content(user_input, camera_frame)
+    if camera_frame is None:
+        return user_input
+    return [{"role": "user", "content": content}]
+
+
 
 
 def _parse_responses_sse_payload(payload: dict[str, Any]) -> str:
@@ -157,8 +184,10 @@ def format_gateway_error(config: HermesConfig, exc: Exception) -> str:
     if isinstance(exc, httpx.ConnectError):
         return (
             f"Cannot reach Hermes gateway at {base}. "
-            "Add API_SERVER_ENABLED=true to ~/.hermes/.env, then run "
-            "`hermes gateway run` in a separate terminal and retry."
+            "With API_SERVER_ENABLED=true, Hermes also requires API_SERVER_KEY in "
+            "~/.hermes/.env before the API server will listen on this port. "
+            "Run `hermes gateway run` in a separate terminal and confirm "
+            "`[API Server] API server listening` appears, then retry."
         )
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
@@ -364,25 +393,18 @@ class HermesAgentClient:
         if not user_input:
             raise InferenceError("Hermes agent mode requires a non-empty user message")
 
+        camera_frame = extract_camera_frame(messages)
         payload: dict[str, Any] = {
             "model": self.config.model,
-            "input": user_input,
+            "input": _responses_input(user_input, camera_frame),
             "instructions": _extract_system_instructions(messages) or TOOL_ACTIVITY_REPORTING_CONTRACT,
             "conversation": self._session_id,
             "stream": True,
         }
 
-        camera_frame = extract_camera_frame(messages)
         if camera_frame:
-            # Convert narrow VisualContext to the wire payload shape for the contract.
-            # (Gateway side still needs to accept + forward this.)
-            payload["camera_frame"] = {
-                "data_url": camera_frame.data_url,
-                "source": camera_frame.source,
-                "captured_at": camera_frame.captured_at,
-                "consent": camera_frame.consent,
-                "contract": camera_frame.contract,
-            }
+            # Metadata for audit/forward-compat; gateway consumes images via multimodal input.
+            payload["camera_frame"] = _camera_frame_metadata(camera_frame)
 
         try:
             async for event in self._stream_responses(payload):
@@ -438,9 +460,10 @@ class HermesAgentClient:
         user_input: str,
     ) -> AsyncIterator[Event]:
         assert self._client is not None
+        camera_frame = extract_camera_frame(messages)
         chat_messages = [
             {"role": "system", "content": _extract_system_instructions(messages) or TOOL_ACTIVITY_REPORTING_CONTRACT},
-            {"role": "user", "content": user_input},
+            {"role": "user", "content": _multimodal_user_content(user_input, camera_frame)},
         ]
         payload = {
             "model": self.config.model,
@@ -448,16 +471,8 @@ class HermesAgentClient:
             "stream": True,
         }
 
-        camera_frame = extract_camera_frame(messages)
         if camera_frame:
-            # Fallback path also carries the frame for gateway compatibility
-            payload["camera_frame"] = {
-                "data_url": camera_frame.data_url,
-                "source": camera_frame.source,
-                "captured_at": camera_frame.captured_at,
-                "consent": camera_frame.consent,
-                "contract": camera_frame.contract,
-            }
+            payload["camera_frame"] = _camera_frame_metadata(camera_frame)
         try:
             async with self._client.stream(
                 "POST",

@@ -11,6 +11,7 @@ from vokel.inference import ChatMessage
 from vokel.memory import MemoryConfig, MemoryEntry
 from vokel.tools import ToolDefinition, ToolRegistry
 from vokel.turns import PassthroughAsr, TextTurnProducer
+from vokel.vision import VisualContext, should_capture_visual_context
 
 
 class FakeLlm:
@@ -74,6 +75,28 @@ class FakeMemoryStore:
 
 
 class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
+    def test_system_prompt_is_grounded_with_current_date(self) -> None:
+        import datetime
+
+        engine = ConversationEngine(llm=FakeLlm([]), playback=RecordingPlayback())
+        system = engine.history[0]["content"]
+        today = datetime.datetime.now().astimezone()
+        # The live build guessed "October 24th, 2024"; the real date must be injected
+        # so a clock-less local model stops confabulating it.
+        self.assertIn("today's date is", system.lower())
+        self.assertIn(str(today.year), system)
+        self.assertIn(today.strftime("%B"), system)
+
+    def test_system_prompt_forbids_fabricating_tools_and_results(self) -> None:
+        # "BS-Buddy" guardrails: the live build claimed a weather/image tool it lacks,
+        # narrated fake tool calls, and invented headlines/weather/an image description.
+        engine = ConversationEngine(llm=FakeLlm([]), playback=RecordingPlayback())
+        system = engine.history[0]["content"].lower()
+        self.assertIn("no weather tool", system)
+        self.assertIn("never narrate tool usage", system)
+        self.assertIn("could not retrieve", system)
+        self.assertIn("never invent", system)
+
     async def test_completed_turn_records_reply_and_speaks_phrases(self) -> None:
         llm: Any = FakeLlm([TextDeltaEvent("Hello, "), TextDeltaEvent("Richard.")])
         playback = RecordingPlayback()
@@ -320,6 +343,55 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Nice image."})
         self.assertNotIn("<|tool_call>", " ".join(playback.spoken))
 
+    async def test_analyze_image_serialized_tool_call_is_stripped(self) -> None:
+        llm: Any = FakeLlm([
+            TextDeltaEvent(
+                '<|tool_call>call: analyze_image{image_description:<|"|>steaming mug<|"|>}<tool_call|> '
+            ),
+            TextDeltaEvent("You are holding a mug."),
+        ])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(llm=llm, playback=playback)
+
+        await engine.start()
+        try:
+            await engine.submit_turn("Describe this object.")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertNotIn("<|tool_call>", engine.history[-1]["content"])
+        self.assertNotIn("analyze_image", engine.history[-1]["content"])
+
+    async def test_visual_question_without_camera_armed_fails_closed(self) -> None:
+        async def provider(user_text: str) -> VisualContext | None:
+            if should_capture_visual_context(user_text):
+                return VisualContext(
+                    data_url="",
+                    source="/dev/video0",
+                    consent="voice_context_not_armed",
+                )
+            return None
+
+        llm: Any = FakeLlm([TextDeltaEvent("You are holding a mug.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            visual_context_provider=provider,
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("What am I holding?")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(len(llm.messages), 0)
+        self.assertIn("Camera Questions", playback.spoken[0])
+        self.assertNotIn("mug", " ".join(playback.spoken).lower())
+
     async def test_image_followup_context_does_not_hijack_unrelated_short_turn(self) -> None:
         queries: list[str] = []
 
@@ -397,21 +469,55 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(queries, [])
         self.assertIsNone(llm.tools[0])
+        visual_message = llm.messages[0][-1]
+        self.assertEqual(visual_message["role"], "user")
         self.assertEqual(
-            llm.messages[0][-1],
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "data:image/jpeg;base64,anBlZw=="},
-                    },
-                    {"type": "text", "text": "What am I holding?"},
-                ],
-            },
+            visual_message["content"][0],
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,anBlZw=="}},
         )
+        # The spoken question rides as-is; the anti-tool-call directive is appended so a
+        # small model answers in words instead of echoing a describe_image tool call.
+        text_part = visual_message["content"][1]
+        self.assertEqual(text_part["type"], "text")
+        self.assertTrue(text_part["text"].startswith("What am I holding?"))
+        self.assertIn("Do not output any tool calls", text_part["text"])
         self.assertIn({"role": "user", "content": "What am I holding?"}, engine.history)
         self.assertNotIn("data:image", str(engine.history))
+
+    async def test_visual_turn_falls_back_when_model_only_emits_tool_call(self) -> None:
+        from vokel.engine import VISUAL_REPLY_FALLBACK
+
+        async def visual_context_provider(user_text: str) -> str | None:
+            if user_text == "What am I holding?":
+                return "data:image/jpeg;base64,anBlZw=="
+            return None
+
+        # The frame is attached, but a 4B model parrots a describe_image tool call
+        # instead of answering — exactly the live failure. Nothing else is emitted.
+        leak = 'call:describe_image{image_base64:<|"|>[Image data provided]<|"|>}<tool_call|>'
+        llm: Any = FakeLlm([TextDeltaEvent(leak)])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            visual_context_provider=visual_context_provider,
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("What am I holding?")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        # The raw tool-call tokens never reach the speaker or the transcript history.
+        spoken = " ".join(playback.spoken)
+        self.assertNotIn("describe_image", spoken)
+        self.assertNotIn("tool_call", spoken)
+        self.assertNotIn("describe_image", str(engine.history))
+        # Instead of silence, the user hears a graceful fallback.
+        self.assertEqual(playback.spoken, [VISUAL_REPLY_FALLBACK])
+        self.assertEqual(engine.history[-1], {"role": "assistant", "content": VISUAL_REPLY_FALLBACK})
 
     async def test_visual_capture_failure_is_spoken_without_model_guessing(self) -> None:
         async def visual_context_provider(user_text: str) -> str | None:
@@ -437,6 +543,71 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
             playback.spoken,
             ["I couldn't capture a camera frame, so I can't answer that visual question yet."],
         )
+
+    async def test_spoken_directive_is_spoken_without_calling_model(self) -> None:
+        from vokel.vision import SpokenReply
+
+        async def provider(user_text: str) -> SpokenReply | None:
+            if user_text == "watch me":
+                return SpokenReply("Just say shoot and I'll take the picture.")
+            return None
+
+        llm: Any = FakeLlm([TextDeltaEvent("model should not run")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            visual_context_provider=provider,
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("watch me")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        self.assertEqual(llm.messages, [])
+        self.assertEqual(playback.spoken, ["Just say shoot and I'll take the picture."])
+        self.assertEqual(engine.history[-2], {"role": "user", "content": "watch me"})
+        self.assertEqual(
+            engine.history[-1],
+            {"role": "assistant", "content": "Just say shoot and I'll take the picture."},
+        )
+
+    async def test_shoot_command_sends_clean_prompt_but_keeps_spoken_words(self) -> None:
+        async def provider(user_text: str) -> VisualContext | None:
+            if user_text == "shoot":
+                return VisualContext(
+                    data_url="data:image/jpeg;base64,anBlZw==",
+                    source="/dev/video0",
+                    prompt="Describe exactly what you see.",
+                )
+            return None
+
+        llm: Any = FakeLlm([TextDeltaEvent("A red mug on a desk.")])
+        playback = RecordingPlayback()
+        engine = ConversationEngine(
+            llm=llm,
+            playback=playback,
+            visual_context_provider=provider,
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("shoot")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        # The vision model receives the clean instruction (plus the anti-tool-call
+        # directive), not the bare "shoot".
+        text_part = llm.messages[0][-1]["content"][1]
+        self.assertEqual(text_part["type"], "text")
+        self.assertTrue(text_part["text"].startswith("Describe exactly what you see."))
+        self.assertIn("Do not output any tool calls", text_part["text"])
+        # The transcript/history still records what the user actually said.
+        self.assertIn({"role": "user", "content": "shoot"}, engine.history)
 
     async def test_barge_in_during_visual_capture_prevents_frame_from_being_sent(self) -> None:
         """Strict proof (per tightening): engine tracks capture task, interrupt cancels it,

@@ -53,7 +53,8 @@ HERMES_CAMERA_FRAME_CONTRACT = (
     "Barge-in / interrupt during capture or generation prevents the frame from reaching any backend "
     "(GStreamer is terminated, the frame is discarded, and the capture lock is held until process exit).\n"
     "\n"
-    "Gateway (Hermes) side changes required (separate): accept camera_frame on both transports, forward as image, return artifacts only as real markdown/URLs.\n"
+    "Hermes HTTP gateway consumes images via OpenAI multimodal input (image_url + text). "
+    "camera_frame metadata is also attached for audit/forward-compat.\n"
     "Android: CameraX produces equivalent VisualContext; same extract/payload path."
 )
 

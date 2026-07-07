@@ -276,9 +276,11 @@ Hermes mode lets Vokel act as a realtime voice front-end for Hermes:
 # ~/.hermes/.env
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8642
-# optional for local development
 API_SERVER_KEY=change-me-local-dev
 ```
+
+`API_SERVER_KEY` is required when the API server is enabled. Without it, `hermes gateway run`
+may start but port 8642 will not listen.
 
 Start Hermes separately:
 
@@ -286,9 +288,11 @@ Start Hermes separately:
 hermes gateway run
 ```
 
-Then open the Vokel dashboard, choose **Agent Extension -> HERMES**, and set the
-gateway URL, normally `http://127.0.0.1:8642`. Leave the API key blank if the
-Hermes gateway is running without one.
+Confirm you see `[API Server] API server listening on http://127.0.0.1:8642`.
+
+Then open the Vokel dashboard, choose **Connection -> HERMES**, set the gateway URL
+(normally `http://127.0.0.1:8642`), and paste the same `API_SERVER_KEY` value into
+Vokel's Hermes API Key field.
 
 See `docs/agent-extensions.md` for details.
 

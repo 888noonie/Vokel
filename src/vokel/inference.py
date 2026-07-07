@@ -86,6 +86,63 @@ def parse_sse_delta(line: str) -> dict[str, Any] | None:
     return choices[0].get("delta")
 
 
+_JAN_401_HINT = (
+    "Jan rejected the API key (HTTP 401). Restart Jan with ~/.local/bin/jan-voice "
+    "or set VOKEL_LLM_API_KEY to the key from `pgrep -af 'llama-server.*6767'`."
+)
+
+
+def derive_models_url(completions_url: str) -> str:
+    """Derive the OpenAI-compatible /v1/models endpoint from a chat URL."""
+    base = completions_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base[: -len("/chat/completions")] + "/models"
+    if "/v1/" in base:
+        return base.split("/v1/")[0] + "/v1/models"
+    return base + "/v1/models"
+
+
+def format_local_error(config: "LmStudioConfig", exc: Exception) -> str:
+    """Translate a transport/HTTP failure into an actionable local-LLM message."""
+    import httpx
+
+    base = config.url
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return (
+            f"Cannot reach the local LLM at {base}. Start Jan with ~/.local/bin/jan-voice "
+            "(or your LM Studio server), confirm it is listening, then retry."
+        )
+    if isinstance(exc, (httpx.ReadTimeout, httpx.PoolTimeout, httpx.WriteTimeout)):
+        return (
+            f"The local LLM at {base} accepted the connection but did not respond in time. "
+            f"Check that the model '{config.model}' is loaded and not stuck."
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status == 401:
+            return _JAN_401_HINT
+        return f"The local LLM at {base} returned HTTP {status}."
+    return f"Local LLM request failed: {exc}"
+
+
+async def check_local_health(config: "LmStudioConfig", client: "httpx.AsyncClient") -> None:
+    """Fail fast when the local LLM socket is unreachable or rejects the key."""
+    headers: dict[str, str] = {}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+    try:
+        response = await client.get(derive_models_url(config.url), headers=headers)
+        response.raise_for_status()
+    except Exception as exc:
+        raise InferenceError(format_local_error(config, exc)) from exc
+
+
+def _local_timeout(config: "LmStudioConfig") -> Any:
+    import httpx
+
+    return httpx.Timeout(config.timeout_seconds, connect=config.connect_timeout_seconds)
+
+
 class LocalInferenceClient:
     capabilities = AgentBackendCapabilities(
         owns_tools=False,
@@ -98,11 +155,20 @@ class LocalInferenceClient:
         self._owns_client = client is None
         self._active_response: Any = None
 
+    def _request_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        return headers
+
     async def __aenter__(self) -> "LocalInferenceClient":
         if self._client is None:
             import httpx
 
-            self._client = httpx.AsyncClient(timeout=self.config.timeout_seconds)
+            self._client = httpx.AsyncClient(
+                timeout=_local_timeout(self.config),
+                headers=self._request_headers(),
+            )
         return self
 
     async def __aexit__(
@@ -144,6 +210,8 @@ class LocalInferenceClient:
         try:
             async with self._client.stream("POST", self.config.url, json=payload) as response:
                 self._active_response = response
+                if response.status_code == 401:
+                    raise InferenceError(_JAN_401_HINT)
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if line.strip() == "data: [DONE]":
@@ -176,6 +244,10 @@ class LocalInferenceClient:
                                 active_tool_calls[index]["function"]["name"] += fn["name"]
                             if "arguments" in fn and fn["arguments"]:
                                 active_tool_calls[index]["function"]["arguments"] += fn["arguments"]
+        except InferenceError:
+            raise
+        except Exception as exc:
+            raise InferenceError(format_local_error(self.config, exc)) from exc
         finally:
             self._active_response = None
 
@@ -312,7 +384,7 @@ class LmStudioNativeMcpClient:
         if self._client is None:
             import httpx
 
-            self._client = httpx.AsyncClient(timeout=self.config.timeout_seconds)
+            self._client = httpx.AsyncClient(timeout=_local_timeout(self.config))
         return self
 
     async def __aexit__(
@@ -398,6 +470,10 @@ class LmStudioNativeMcpClient:
                 response.raise_for_status()
                 async for event in _parse_native_chat_stream(response, final_result_holder=final_holder):
                     yield event
+        except InferenceError:
+            raise
+        except Exception as exc:
+            raise InferenceError(format_local_error(self.config, exc)) from exc
         finally:
             self._active_response = None
 

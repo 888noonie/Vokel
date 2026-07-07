@@ -15,7 +15,7 @@ class StreamingPhase3Tests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(FileNotFoundError):
             create_streaming_asr(Path("/nonexistent/zipformer-dir-xyz"))
 
-    @patch("vokel.audio._require_audio_dependencies")
+    @patch("vokel.audio.capture._require_audio_dependencies")
     @patch.object(Path, "is_file", return_value=True)
     async def test_sherpa_online_transcribe_returns_prefilled_text(
         self, _mock_is_file: MagicMock, mock_deps: MagicMock

@@ -69,6 +69,54 @@
         "reveal": "always",
         "panel": "shared"
       }
+    },
+    {
+      "label": "Vokel: Start Jan (LLM :6767)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/start-backend.sh jan",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "backends"
+      }
+    },
+    {
+      "label": "Vokel: Start LM Studio Server (:1234)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/start-backend.sh lmstudio",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "backends"
+      }
+    },
+    {
+      "label": "Vokel: Start Hermes Gateway (:8642)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/start-backend.sh hermes",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "backends"
+      }
+    },
+    {
+      "label": "Vokel: Start Web Server (:8000)",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/start-backend.sh vokel",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "backends"
+      }
     }
   ]
 }

@@ -14,10 +14,22 @@ IMAGE_LINK_RE = re.compile(
     re.I,
 )
 TOOL_CALL_MARKER_RE = re.compile(r"\[tool_call:[^\]]+\]")
+# Mirror of engine.SERIALIZED_TOOL_CALL_RE: catch both the opener-led shape and the
+# no-opener `call:name{...}<tool_call|>` shape small models leak around image args.
 SERIALIZED_TOOL_CALL_RE = re.compile(
-    r"<\|tool_call\>\s*call:[A-Za-z0-9_.:-]+(?:\{.*?\})?\s*<tool_call\|>",
+    r"<\|tool_call\|?>\s*"
+    r"(?:call\s*:\s*[\w.:-]+)?"
+    r"(?:\s*(?:\([^)]*\)|\{[^}]*\}))*"
+    r"(?:\s*<\|?/?tool_call\|?>)?"
+    r"|"
+    r"call\s*:\s*[\w.:-]+"
+    r"(?:\s*(?:\([^)]*\)|\{[^}]*\}))+"
+    r"(?:\s*<\|?/?tool_call\|?>)?",
     re.S,
 )
+# Mop up any orphaned tool-call delimiters (opener or closer alone) and the stray
+# `<|"|>` quote token, so a partial emission never reaches the speaker as words.
+RESIDUAL_TOOL_TOKEN_RE = re.compile(r"<\|?/?tool_call\|?>|<\|[\"']\|>", re.I)
 
 
 class PlaybackSink(Protocol):
@@ -264,6 +276,7 @@ def sanitize_for_speech(text: str) -> str:
     speech = html.unescape(text)
     speech = TOOL_CALL_MARKER_RE.sub(" ", speech)
     speech = SERIALIZED_TOOL_CALL_RE.sub(" ", speech)
+    speech = RESIDUAL_TOOL_TOKEN_RE.sub(" ", speech)
 
     def _replace_markdown_link(match: re.Match[str]) -> str:
         label = match.group(1).strip()

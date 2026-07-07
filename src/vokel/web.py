@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Coroutine, Literal
 
 import numpy as np
+from dataclasses import replace
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
@@ -37,7 +38,12 @@ from .hermes_client import (
     check_gateway_health,
     check_gateway_inference,
 )
-from .inference import InferenceError, LocalInferenceClient, LmStudioNativeMcpClient
+from .inference import (
+    InferenceError,
+    LocalInferenceClient,
+    LmStudioNativeMcpClient,
+    check_local_health,
+)
 from .memory import MemoryConfig, SQLiteMemoryStore
 from .playback import (
     KOKORO_VOICES,
@@ -49,12 +55,19 @@ from .playback import (
 )
 from .telemetry import LatencyTrace, TraceEvent
 from .vision import (
+    CAMERA_GUIDANCE_OFFER,
+    CAMERA_VISION_PROMPT,
     DEFAULT_VISION_PROMPT,
+    SpokenReply,
     VisualContext,
     analyze_camera_frame,
+    capture_camera_frame,
     capture_camera_frame_async,
+    capture_prompt_for,
+    detect_camera_command,
     is_loopback_url,
     list_camera_devices,
+    pick_default_camera,
     should_capture_visual_context,
 )
 
@@ -197,10 +210,12 @@ class WebSocketPlaybackSink:
 
 
 class VisionAnalyzeRequest(BaseModel):
-    device: str = "/dev/video4"
+    device: str = "/dev/video0"
     url: str = LmStudioConfig.url
     model_name: str = Field(default=LmStudioConfig.model, alias="model")
     prompt: str = DEFAULT_VISION_PROMPT
+    api_key: str = ""
+    backend: str = "local"
     max_tokens: int = Field(default=120, ge=1, le=400)
     width: int = Field(default=640, ge=160, le=1920)
     height: int = Field(default=480, ge=120, le=1080)
@@ -211,9 +226,7 @@ class VisionAnalyzeRequest(BaseModel):
 @app.get("/api/vision/cameras")
 def get_vision_cameras() -> dict[str, Any]:
     cameras = list_camera_devices()
-    default_device = "/dev/video4" if any(camera.path == "/dev/video4" for camera in cameras) else ""
-    if not default_device and cameras:
-        default_device = cameras[0].path
+    default_device = pick_default_camera(cameras)
     return {
         "cameras": [{"path": camera.path, "name": camera.name} for camera in cameras],
         "default_device": default_device,
@@ -221,12 +234,43 @@ def get_vision_cameras() -> dict[str, Any]:
     }
 
 
+@app.get("/api/vision/snapshot")
+async def vision_snapshot(device: str) -> dict[str, Any]:
+    cameras = list_camera_devices()
+    if device not in {camera.path for camera in cameras}:
+        raise HTTPException(status_code=400, detail=f"Camera device is not available: {device}")
+    if _VISION_CAPTURE_LOCK.locked():
+        raise HTTPException(status_code=409, detail="Camera busy — AI is capturing a frame.")
+
+    try:
+        async with _VISION_CAPTURE_LOCK:
+            captured = await asyncio.to_thread(
+                capture_camera_frame,
+                device=device,
+                width=640,
+                height=480,
+                framerate=15,
+                warmup_frames=2,
+            )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "device": captured.device,
+        "image_data_url": captured.image_data_url,
+        "capture_seconds": captured.capture_seconds,
+    }
+
+
 @app.post("/api/vision/analyze")
 async def analyze_vision(request: VisionAnalyzeRequest) -> dict[str, Any]:
-    if not is_loopback_url(request.url):
+    from .vision import is_hermes_gateway_url
+
+    hermes_backend = request.backend == "hermes" or is_hermes_gateway_url(request.url)
+    if not hermes_backend and not is_loopback_url(request.url):
         raise HTTPException(
             status_code=400,
-            detail="Live vision only sends frames to a loopback LM Studio endpoint.",
+            detail="Live vision only sends frames to a loopback local or Hermes gateway endpoint.",
         )
 
     cameras = list_camera_devices()
@@ -236,6 +280,17 @@ async def analyze_vision(request: VisionAnalyzeRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="A live vision capture is already running.")
 
     try:
+        from .jan_key import resolve_llm_api_key
+
+        api_key = (
+            request.api_key
+            if hermes_backend
+            else resolve_llm_api_key(
+                request.url,
+                explicit_key=request.api_key,
+                env_key=LmStudioConfig.api_key,
+            )
+        )
         async with _VISION_CAPTURE_LOCK:
             analysis = await asyncio.to_thread(
                 analyze_camera_frame,
@@ -248,6 +303,8 @@ async def analyze_vision(request: VisionAnalyzeRequest) -> dict[str, Any]:
                 height=request.height,
                 framerate=request.framerate,
                 warmup_frames=request.warmup_frames,
+                api_key=api_key,
+                backend="hermes" if hermes_backend else "local",
             )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -291,8 +348,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     browser_last_changed_time = asyncio.get_running_loop().time()
     browser_stable_fired = False
     vision_voice_enabled = False
-    vision_device = "/dev/video4"
+    vision_device = "/dev/video0"
     vision_lm_url = LmStudioConfig.url
+    # Resolved by the browser when it already holds the camera (Live Feed preview);
+    # lets "shoot" grab that frame instead of losing a race for a busy V4L2 device.
+    browser_frame_future: asyncio.Future[str | None] | None = None
 
     async def run_auto_followup() -> None:
         if engine is None or session_paused:
@@ -385,6 +445,30 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "detail": detail,
         })
 
+    async def request_browser_frame(timeout: float = 3.0) -> str | None:
+        """Ask the dashboard for one frame from its live preview and await the reply.
+
+        The browser already owns the camera while Live Feed is on, so a server-side
+        GStreamer grab would fail with "device busy". Capturing from the browser avoids
+        the conflict entirely and works for any camera the browser can see. Returns
+        ``None`` quickly when no preview is active (the browser replies with null).
+        """
+        nonlocal browser_frame_future
+        if browser_frame_future is not None and not browser_frame_future.done():
+            browser_frame_future.cancel()
+        loop = asyncio.get_running_loop()
+        browser_frame_future = loop.create_future()
+        await send_json({"type": "request_camera_frame", "device": vision_device})
+        try:
+            data_url = await asyncio.wait_for(browser_frame_future, timeout=timeout)
+        except (TimeoutError, asyncio.CancelledError):
+            return None
+        finally:
+            browser_frame_future = None
+        if isinstance(data_url, str) and data_url.startswith("data:image"):
+            return data_url
+        return None
+
     async def capture_voice_vision_context() -> str | VisualContext | None:
         # Builtin LM route: private frame only to localhost LM endpoint.
         # Hermes route: local capture; frame sent only via explicitly consented
@@ -395,23 +479,60 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "message": "Voice camera context requires a loopback LM Studio endpoint for the local model route.",
             })
             return None
-        if vision_device not in {camera.path for camera in list_camera_devices()}:
+
+        # Prefer a frame from the browser preview when it is live: it already owns the
+        # camera (server capture would hit "device busy") and covers cameras GStreamer
+        # cannot negotiate. Falls through to local capture when no preview is active.
+        browser_url = await request_browser_frame()
+        if browser_url:
+            await send_json({
+                "type": "vision_context_captured",
+                "device": vision_device,
+                "image_data_url": browser_url,
+                "capture_seconds": 0.0,
+            })
+            await send_agent_event(
+                "visual_context_attached",
+                backend="vokel",
+                detail="Fresh browser-preview frame attached to spoken question",
+                device=vision_device,
+                source="browser_preview",
+            )
+            if hermes_mode:
+                await send_agent_event(
+                    "external_media_route_initiated",
+                    backend="hermes",
+                    detail="Explicitly approved camera frame routed to Hermes (camera_frame contract)",
+                    device=vision_device,
+                    route="camera_frame",
+                    consent="voice_context_arm",
+                )
+            return VisualContext(
+                data_url=browser_url,
+                source=vision_device,
+                captured_at=datetime.now(timezone.utc).isoformat(),
+                consent="explicit_visual_context_for_turn",
+                contract="hermes_camera_frame_v1",
+            )
+
+        device = await resolve_voice_camera_device()
+        if not device:
             await send_json({
                 "type": "error",
-                "message": f"Voice camera is not available: {vision_device}",
+                "message": "No camera is available to capture a frame.",
             })
             return None
 
         await send_agent_event(
             "visual_context_capture_started",
             backend="vokel",
-            detail=f"Capturing one local frame from {vision_device}",
-            device=vision_device,
+            detail=f"Capturing one local frame from {device}",
+            device=device,
         )
         try:
             async with _VISION_CAPTURE_LOCK:
                 captured = await capture_camera_frame_async(
-                    device=vision_device,
+                    device=device,
                     width=640,
                     height=480,
                     framerate=30,
@@ -464,13 +585,132 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         )
         return vc
 
-    async def provide_voice_visual_context(user_text: str) -> str | VisualContext | None:
-        if not vision_voice_enabled or not should_capture_visual_context(user_text):
+    async def resolve_voice_camera_device() -> str:
+        """Return a camera path that can actually pull frames.
+
+        The dashboard often ships a stale default (``/dev/video0``) that is not a
+        capturable node, which silently broke every "shoot". When the configured
+        device cannot capture, fall back to autodetect, adopt it, and tell the UI so
+        the toggle and panel reflect the camera Vokel is really using.
+        """
+        nonlocal vision_device
+        cameras = list_camera_devices()
+        if vision_device in {camera.path for camera in cameras}:
+            return vision_device
+        fallback = pick_default_camera(cameras)
+        if not fallback:
+            return ""
+        if fallback != vision_device:
+            vision_device = fallback
+            await send_json({
+                "type": "vision_context_state",
+                "enabled": vision_voice_enabled,
+                "device": vision_device,
+            })
+        return fallback
+
+    async def ensure_voice_camera_armed(reason: str) -> bool:
+        """Arm Camera Questions from an explicit spoken command and sync the UI toggle.
+
+        Saying "watch me" or "shoot" is itself explicit consent to be seen, so we flip
+        the arm state, audit it, and tell the dashboard so the switch reflects reality.
+        """
+        nonlocal vision_voice_enabled
+        if vision_voice_enabled:
+            return True
+        device = await resolve_voice_camera_device()
+        if not device:
+            await send_json({
+                "type": "error",
+                "message": "No camera is available to start the voice loop.",
+            })
+            return False
+        vision_voice_enabled = True
+        await send_agent_event(
+            "visual_context_auto_armed",
+            backend="vokel",
+            detail=f"Camera Questions armed by voice command ({reason})",
+            device=device,
+            reason=reason,
+        )
+        await send_json({
+            "type": "vision_context_state",
+            "enabled": True,
+            "device": device,
+        })
+        return True
+
+    async def send_vision_control(action: str) -> None:
+        """Tell the dashboard to start/stop its live AI watch loop."""
+        await send_json({
+            "type": "vision_control",
+            "action": action,
+            "device": vision_device,
+        })
+        await send_agent_event(
+            "vision_control",
+            backend="vokel",
+            detail=f"Live video loop {action.replace('_', ' ')}",
+            action=action,
+            device=vision_device,
+        )
+
+    async def provide_voice_visual_context(
+        user_text: str,
+    ) -> str | VisualContext | SpokenReply | None:
+        command = detect_camera_command(user_text)
+
+        # Control commands are deterministic: Vokel acts and speaks the result itself,
+        # so even a small local model never has to decide or narrate camera actions.
+        if command == "watch":
+            await ensure_voice_camera_armed("watch_me")
+            return SpokenReply(CAMERA_GUIDANCE_OFFER)
+        if command == "action":
+            await send_vision_control("start_live")
+            return SpokenReply(
+                "Action. I'm watching the live feed now — say cut when you want me to stop."
+            )
+        if command == "cut":
+            await send_vision_control("stop_live")
+            return SpokenReply("Cut. I've stopped watching the live feed.")
+
+        wants_capture = command == "shoot" or should_capture_visual_context(user_text)
+        if not wants_capture:
             return None
+
+        if not vision_voice_enabled:
+            if command == "shoot":
+                # Explicit photo intent counts as consent — arm if a camera exists.
+                if not await ensure_voice_camera_armed("shoot"):
+                    return VisualContext(
+                        data_url="", source=vision_device, consent="capture_failed"
+                    )
+            else:
+                await send_agent_event(
+                    "visual_context_not_armed",
+                    backend="vokel",
+                    level="warning",
+                    detail="Visual question blocked until Camera Questions in Voice Loop is enabled",
+                )
+                return VisualContext(
+                    data_url="",
+                    source=vision_device,
+                    consent="voice_context_not_armed",
+                )
+
         await send_json({"type": "status", "status": "capturing_vision"})
-        image_data_url = await capture_voice_vision_context()
+        captured = await capture_voice_vision_context()
         await send_json({"type": "status", "status": "generating"})
-        return image_data_url or ""
+        if captured is None:
+            return ""
+        # A bare "shoot" makes a poor vision prompt, so answer a clean instruction
+        # about the frame; but if the user attached a real question ("take a picture
+        # and tell me what's on my head"), answer that instead. The transcript always
+        # keeps what the user actually said.
+        if command == "shoot" and captured.data_url:
+            prompt = capture_prompt_for(user_text, bare_prompt=CAMERA_VISION_PROMPT)
+            return replace(captured, prompt=prompt)
+        return captured
 
     async def pause_active_session(source: str) -> None:
         nonlocal session_paused, local_loop_task
@@ -561,7 +801,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     # Allow voice camera (explicit armed) for both LM and Hermes.
                     # For Hermes the frame travels under the camera_frame contract with visible consent.
                     vision_voice_enabled = bool(data.get("vision_voice_enabled", False))
-                    vision_device = str(data.get("vision_device", "/dev/video4"))
+                    vision_device = str(data.get("vision_device", "/dev/video0"))
                     vision_lm_url = str(url)
                     voice = str(data.get("voice", "af_heart"))
                     if voice not in KOKORO_VOICES:
@@ -579,6 +819,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                     memory_store = active_memory_store if memory_config.enabled else None
 
+                    # Captured only for the plain OpenAI-compat (Jan) path so we can
+                    # preflight its socket before the first turn.
+                    local_preflight_config: LmStudioConfig | None = None
                     if hermes_mode:
                         hermes_base = str(
                             data.get("hermes_url", HermesConfig.base_url)
@@ -602,8 +845,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             )
                             agent_client = LmStudioNativeMcpClient(lm_config, integrations=list(mcp_ids))
                         else:
-                            lm_config = LmStudioConfig(url=url, model=model)
+                            from .jan_key import resolve_llm_api_key
+
+                            api_key = resolve_llm_api_key(
+                                url,
+                                explicit_key=str(data.get("api_key", "")),
+                                env_key=LmStudioConfig.api_key,
+                            )
+                            lm_config = LmStudioConfig(url=url, model=model, api_key=api_key)
                             agent_client = LocalInferenceClient(lm_config)
+                            local_preflight_config = lm_config
                     await agent_client.__aenter__()
                     await send_agent_event(
                         "agent_client_ready",
@@ -647,6 +898,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             await send_agent_event(
                                 "gateway_inference_failed",
                                 backend="hermes",
+                                level="error",
+                                detail=str(exc),
+                            )
+                            await send_json({"type": "error", "message": str(exc)})
+                            continue
+
+                    if local_preflight_config is not None and agent_client is not None:
+                        try:
+                            await check_local_health(local_preflight_config, agent_client._client)
+                            await send_agent_event(
+                                "local_llm_health_ok",
+                                backend=agent_backend_name,
+                                detail=f"Local LLM reachable at {local_preflight_config.url}",
+                            )
+                        except InferenceError as exc:
+                            await agent_client.__aexit__(None, None, None)
+                            agent_client = None
+                            await send_agent_event(
+                                "local_llm_health_failed",
+                                backend=agent_backend_name,
                                 level="error",
                                 detail=str(exc),
                             )
@@ -882,6 +1153,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         device=vision_device,
                         enabled=vision_voice_enabled,
                     )
+
+                elif msg_type == "camera_frame":
+                    # Reply to a request_camera_frame: the browser sends a preview frame
+                    # (or null when no preview is live). Hand it to the waiting capture.
+                    if browser_frame_future is not None and not browser_frame_future.done():
+                        browser_frame_future.set_result(data.get("image_data_url"))
 
                 elif msg_type == "stop_session":
                     await send_agent_event("session_stop_requested", detail="Stop requested", backend="vokel")
