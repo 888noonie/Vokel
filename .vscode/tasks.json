@@ -117,6 +117,45 @@
         "panel": "dedicated",
         "group": "backends"
       }
+    },
+    {
+      "label": "Vokel: Musical Mode Smoke — Walk Instructions",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/smoke-musical-walk.sh",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true,
+        "group": "musical-smoke"
+      }
+    },
+    {
+      "label": "Vokel: Musical Mode Smoke Walk",
+      "dependsOn": [
+        "Vokel: Musical Mode Smoke — Walk Instructions",
+        "Vokel: Start Jan (LLM :6767)",
+        "Vokel: Start Web Server (:8000)"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "musical-smoke"
+      }
+    },
+    {
+      "label": "Vokel: Probe Musical Mode (WS beats)",
+      "type": "shell",
+      "command": "PYTHONPATH=src ${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/ws-musical-probe.py",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true,
+        "group": "musical-smoke"
+      }
     }
   ]
 }

@@ -35,6 +35,8 @@ import { VoiceOrb } from "./components/VoiceOrb";
 import { PersonaSelector } from "./components/PersonaSelector";
 import { LiveVisionPanel } from "./components/LiveVisionPanel";
 import type { VisionFrame } from "./components/LiveVisionPanel";
+import { BeatIndicator } from "./components/BeatIndicator";
+import type { BeatPulse } from "./components/BeatIndicator";
 
 type Mode = "local" | "browser";
 type AgentBackend = "builtin" | "hermes";
@@ -143,6 +145,9 @@ function App() {
     ttsSpeed: 1,
     outputMuted: false,
     outputVolume: 1,
+    musicalMode: false,
+    musicalBpm: 90,
+    musicalLevel: 1,
   });
   const savedConnection = loadJson<{ provider?: LlmConnection }>(connectionPrefsKey, {
     provider: "jan",
@@ -163,6 +168,14 @@ function App() {
   const [ttsSpeed, setTtsSpeed] = useState(savedVoicePrefs.ttsSpeed);
   const [outputMuted, setOutputMuted] = useState(savedVoicePrefs.outputMuted);
   const [outputVolume, setOutputVolume] = useState(savedVoicePrefs.outputVolume);
+  const [musicalMode, setMusicalMode] = useState(Boolean(savedVoicePrefs.musicalMode));
+  const [musicalBpm, setMusicalBpm] = useState(
+    typeof savedVoicePrefs.musicalBpm === "number" ? savedVoicePrefs.musicalBpm : 90
+  );
+  const [musicalLevel, setMusicalLevel] = useState(
+    typeof savedVoicePrefs.musicalLevel === "number" ? savedVoicePrefs.musicalLevel : 1
+  );
+  const [beatPulse, setBeatPulse] = useState<BeatPulse | null>(null);
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
   const [autoFollowupEnabled, setAutoFollowupEnabled] = useState(true);
@@ -199,6 +212,7 @@ function App() {
   const toolAudioContextRef = useRef<AudioContext | null>(null);
   const toolCueActiveRef = useRef(false);
   const messagesRef = useRef<Message[]>([]);
+  const musicalLevelSendTimerRef = useRef<number | null>(null);
 
   // Hook for audio streaming and local queue scheduling in browser mode
   const { startStreaming, stopStreaming, isStreaming, micVolume } = useAudioStreamer({
@@ -219,9 +233,39 @@ function App() {
         ttsSpeed,
         outputMuted,
         outputVolume,
+        musicalMode,
+        musicalBpm,
+        musicalLevel,
       })
     );
-  }, [playbackBackend, voice, ttsSpeed, outputMuted, outputVolume]);
+  }, [playbackBackend, voice, ttsSpeed, outputMuted, outputVolume, musicalMode, musicalBpm, musicalLevel]);
+
+  const sendMusicalLevel = useCallback(
+    (level: number) => {
+      if (!socketRef.current || !isConnected || !isSessionActive) return;
+      socketRef.current.send(
+        JSON.stringify({
+          type: "set_musical_level",
+          level,
+        })
+      );
+    },
+    [isConnected, isSessionActive]
+  );
+
+  const handleMusicalLevelChange = useCallback(
+    (level: number) => {
+      setMusicalLevel(level);
+      if (musicalLevelSendTimerRef.current !== null) {
+        window.clearTimeout(musicalLevelSendTimerRef.current);
+      }
+      musicalLevelSendTimerRef.current = window.setTimeout(() => {
+        sendMusicalLevel(level);
+        musicalLevelSendTimerRef.current = null;
+      }, 100);
+    },
+    [sendMusicalLevel]
+  );
 
   useEffect(() => {
     window.localStorage.setItem(previousChatsKey, JSON.stringify(previousChats));
@@ -401,10 +445,20 @@ function App() {
             setIsPaused(false);
             setActiveToolName(null);
             setActiveHermesSessionId(null);
+            setBeatPulse(null);
             setExecuteState({ armed: false, risk: "none", detail: "idle" });
             void stopToolCue(false);
             stopVoicePreview();
             stopStreaming();
+            break;
+
+          case "beat":
+            setBeatPulse({
+              bar: Number(data.bar ?? 0),
+              beat: Number(data.beat ?? 0),
+              bpm: Number(data.bpm ?? musicalBpm),
+              receivedAt: Date.now(),
+            });
             break;
 
           case "status":
@@ -637,6 +691,9 @@ function App() {
         // Persona + Live Voice Presence (Command #2)
         persona: currentPersona,
         persona_prompt: personaPrompt,
+        musical_mode: musicalMode,
+        musical_bpm: musicalBpm,
+        musical_level: musicalLevel,
       })
     );
   };
@@ -1521,6 +1578,62 @@ function App() {
                 />
               </div>
 
+              <button
+                type="button"
+                role="switch"
+                aria-checked={musicalMode}
+                disabled={
+                  isSessionActive ||
+                  mode !== "local" ||
+                  (playbackBackend !== "kokoro" && playbackBackend !== "spd-say")
+                }
+                onClick={() => setMusicalMode((enabled) => !enabled)}
+                className="touch-button vokel-panel-subtle w-full rounded-2xl px-4 py-3 text-left text-xs text-zinc-400 transition-all hover:border-purple-500/30 disabled:opacity-55"
+              >
+                <span className="flex items-center justify-between gap-4">
+                  <span>
+                    <span className="flex items-center gap-1.5 font-bold text-zinc-300 font-mono uppercase">
+                      <Radio className="w-3.5 h-3.5 text-purple-400" />
+                      Musical Mode
+                    </span>
+                    <span className="block mt-1 leading-normal">
+                      Quantize TTS to the beat grid with a low backing loop. Local Kokoro or
+                      spd-say only.
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 flex-col items-end gap-1">
+                    <span className="text-[10px] font-mono uppercase text-zinc-500">
+                      {musicalMode ? "On" : "Off"}
+                    </span>
+                    <span className="recall-switch" data-enabled={musicalMode}>
+                      <span className="recall-knob" />
+                    </span>
+                  </span>
+                </span>
+              </button>
+
+              {musicalMode && (
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                    Tempo: {musicalBpm} BPM
+                  </label>
+                  <input
+                    type="range"
+                    min="60"
+                    max="160"
+                    step="5"
+                    disabled={
+                      isSessionActive ||
+                      mode !== "local" ||
+                      (playbackBackend !== "kokoro" && playbackBackend !== "spd-say")
+                    }
+                    value={musicalBpm}
+                    onChange={(e) => setMusicalBpm(Number(e.target.value))}
+                    className="w-full accent-purple-500"
+                  />
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
                   Browser Output Volume: {outputMuted ? "Muted" : `${Math.round(outputVolume * 100)}%`}
@@ -1707,6 +1820,14 @@ function App() {
               <div className="text-[11px] text-white/50 mt-0.5">Live voice, reactive to every turn</div>
             </div>
           </div>
+
+          <BeatIndicator
+            musicalMode={musicalMode}
+            isSessionActive={isSessionActive}
+            beatPulse={beatPulse}
+            musicalLevel={musicalLevel}
+            onMusicalLevelChange={handleMusicalLevelChange}
+          />
 
           {/* Waveform visualizer (detailed audio pipeline) */}
           <WaveformVisualizer status={status} volume={isStreaming ? micVolume : 0} />

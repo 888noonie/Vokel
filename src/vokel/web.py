@@ -24,13 +24,16 @@ from .audio import (
     SileroVadTurnProducer,
     create_streaming_asr,
 )
+from .audio.beatclock import BeatClock, ClockStopped
+from .audio.beattrack import BeatTrackPlayer
+from .audio.quantized_sink import QuantizedPlaybackSink
 from .auto_followup import (
     AutoFollowupScheduler,
     clamp_auto_followup_seconds,
     DEFAULT_AUTO_FOLLOWUP_SECONDS,
 )
 from .agent_backend import AgentBackend
-from .config import LmStudioConfig
+from .config import LmStudioConfig, VoiceLoopConfig
 from .engine import AgentMode, ConversationEngine
 from .hermes_client import (
     HermesAgentClient,
@@ -353,6 +356,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     # Resolved by the browser when it already holds the camera (Live Feed preview);
     # lets "shoot" grab that frame instead of losing a race for a busy V4L2 device.
     browser_frame_future: asyncio.Future[str | None] | None = None
+    musical_clock: BeatClock | None = None
+    beat_track: BeatTrackPlayer | None = None
+    beat_forward_task: asyncio.Task[None] | None = None
+
+    async def teardown_musical_mode() -> None:
+        nonlocal musical_clock, beat_track, beat_forward_task
+        if beat_forward_task is not None and not beat_forward_task.done():
+            beat_forward_task.cancel()
+            try:
+                await beat_forward_task
+            except asyncio.CancelledError:
+                pass
+        beat_forward_task = None
+        if musical_clock is not None:
+            await musical_clock.stop()
+            musical_clock = None
+        if beat_track is not None:
+            await beat_track.stop()
+            beat_track = None
 
     async def run_auto_followup() -> None:
         if engine is None or session_paused:
@@ -774,6 +796,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     # Clean up any existing session
                     if local_loop_task and not local_loop_task.done():
                         local_loop_task.cancel()
+                    await teardown_musical_mode()
                     if engine:
                         await engine.close()
                     if agent_client:
@@ -944,6 +967,67 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         else:
                             playback = ConsolePlaybackSink()
 
+                        musical_mode = bool(data.get("musical_mode", False))
+                        try:
+                            musical_bpm = min(
+                                160.0, max(60.0, float(data.get("musical_bpm", 90.0)))
+                            )
+                        except (TypeError, ValueError):
+                            musical_bpm = 90.0
+                        try:
+                            musical_level = min(
+                                1.0, max(0.0, float(data.get("musical_level", 1.0)))
+                            )
+                        except (TypeError, ValueError):
+                            musical_level = 1.0
+                        voice_loop_config: VoiceLoopConfig | None = None
+                        if (
+                            musical_mode
+                            and playback_backend in ("kokoro", "spd-say")
+                        ):
+                            musical_clock = BeatClock(bpm=musical_bpm)
+                            beat_track = BeatTrackPlayer(
+                                bpm=musical_bpm,
+                                level=musical_level,
+                            )
+                            await musical_clock.start()
+                            await beat_track.start()
+                            playback = QuantizedPlaybackSink(
+                                playback,
+                                musical_clock,
+                                quantum="beat",
+                            )
+                            base = VoiceLoopConfig()
+                            voice_loop_config = VoiceLoopConfig(
+                                system_prompt=base.system_prompt + (
+                                    f" You are currently performing over a live beat at "
+                                    f"{musical_bpm:.0f} BPM. "
+                                    "Deliver every reply as short rhythmic rap lines with rhyme "
+                                    "and flow, a few words per line, so each phrase lands on the "
+                                    "beat. You are the rapper — never say you are playing, "
+                                    "finding, queueing, or displaying a track or lyrics; speak "
+                                    "the bars yourself."
+                                )
+                            )
+                            beat_clock = musical_clock
+
+                            async def forward_beats() -> None:
+                                try:
+                                    while True:
+                                        info = await beat_clock.wait_for_beat()
+                                        await send_json({
+                                            "type": "beat",
+                                            "bar": info.bar,
+                                            "beat": info.beat,
+                                            "bpm": musical_bpm,
+                                        })
+                                except ClockStopped:
+                                    pass
+                                except Exception as exc:
+                                    logger.debug("beat forwarder exited: %s", exc)
+
+                            beat_forward_task = asyncio.create_task(forward_beats())
+
                         # Configure offline ASR and VAD
                         vad_model_path = data.get("vad_model", "models/silero_vad.onnx")
                         asr_tokens = data.get(
@@ -963,16 +1047,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             )
                         )
 
-                        engine = ConversationEngine(
-                            agent=agent_client,
-                            playback=playback,
-                            trace=trace,
-                            echo_tokens=False,
-                            memory_store=memory_store,
-                            memory_config=memory_config,
-                            agent_mode=agent_mode,
-                            visual_context_provider=provide_voice_visual_context,
-                        )
+                        local_engine_kwargs: dict[str, Any] = {
+                            "agent": agent_client,
+                            "playback": playback,
+                            "trace": trace,
+                            "echo_tokens": False,
+                            "memory_store": memory_store,
+                            "memory_config": memory_config,
+                            "agent_mode": agent_mode,
+                            "visual_context_provider": provide_voice_visual_context,
+                        }
+                        if voice_loop_config is not None:
+                            local_engine_kwargs["config"] = voice_loop_config
+                        engine = ConversationEngine(**local_engine_kwargs)
                         await engine.start()
                         attach_auto_followup_scheduler()
 
@@ -1165,6 +1252,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     cancel_auto_followup()
                     if local_loop_task and not local_loop_task.done():
                         local_loop_task.cancel()
+                    await teardown_musical_mode()
                     if engine:
                         await engine.close()
                     if agent_client:
@@ -1178,6 +1266,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await send_execute_state("idle")
                     await send_json({"type": "session_stopped"})
                     await send_agent_event("session_stopped", detail="Session stopped", backend="vokel")
+
+                elif msg_type == "set_musical_level":
+                    if beat_track is not None:
+                        try:
+                            level = min(1.0, max(0.0, float(data.get("level", 1.0))))
+                            beat_track.set_level(level)
+                        except (TypeError, ValueError):
+                            pass
 
                 elif msg_type == "interrupt":
                     if engine:
@@ -1434,6 +1530,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         cancel_auto_followup()
         if local_loop_task and not local_loop_task.done():
             local_loop_task.cancel()
+        await teardown_musical_mode()
         if engine:
             await engine.close()
         if agent_client:

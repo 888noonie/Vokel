@@ -296,6 +296,21 @@ Vokel's Hermes API Key field.
 
 See `docs/agent-extensions.md` for details.
 
+## Musical mode (experimental)
+
+Musical mode is an optional layer that keeps the normal voice loop intact while adding a
+drift-corrected beat grid, a low synthesized backing loop, and beat-aligned TTS phrase starts.
+
+- Toggle it in **Settings → Musical Mode** (persisted in `vokel.voicePrefs.v1`).
+- Set tempo with the **60–160 BPM** slider (step 5; default 90).
+- **Local hardware + Kokoro or spd-say only** for now. Browser-audio and Hermes playback
+  paths stay unquantized in Phase 1.
+- When off, behavior and payloads stay at safe defaults (`musical_mode: false`).
+
+Phase 2 ideas (not started): sidechain ducking under TTS, syllable-level cadence prosody,
+browser-audio quantization, and deriving the beat clock from the audio stream frame counter
+instead of asyncio timing.
+
 ## Test
 
 ```bash

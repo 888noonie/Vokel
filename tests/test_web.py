@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 from fastapi.testclient import TestClient
 
+from vokel.audio.beatclock import BeatClock
+from vokel.audio.quantized_sink import QuantizedPlaybackSink
 from vokel.web import app, detect_voice_session_command
 from vokel.vision import CameraDevice, VisionFrameAnalysis
 
@@ -17,6 +22,52 @@ def receive_expected(websocket: any, target_types: tuple[str, ...]) -> dict[str,
             data = json.loads(msg["text"])
             if data.get("type") in target_types:
                 return data
+
+
+def collect_messages(
+    websocket: any,
+    *,
+    target_type: str,
+    count: int,
+    timeout_seconds: float = 2.0,
+) -> list[dict[str, any]]:
+    messages: list[dict[str, any]] = []
+    deadline = time.monotonic() + timeout_seconds
+    while len(messages) < count and time.monotonic() < deadline:
+        msg = websocket.receive()
+        if "text" not in msg:
+            continue
+        data = json.loads(msg["text"])
+        if data.get("type") == target_type:
+            messages.append(data)
+    return messages
+
+
+def _local_session_patches() -> tuple[Any, ...]:
+    mock_engine = MagicMock()
+    mock_engine.start = AsyncMock()
+    mock_engine.close = AsyncMock()
+
+    async def idle_run_turns(*_args: any, **_kwargs: any) -> None:
+        try:
+            while True:
+                await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            return None
+
+    mock_engine.run_turns = idle_run_turns
+    mock_engine.trace = MagicMock()
+    mock_engine.trace.summary_ms.return_value = {}
+
+    return (
+        patch("vokel.web.check_local_health", new_callable=AsyncMock),
+        patch("vokel.web.LocalInferenceClient"),
+        patch("vokel.web.KokoroPlaybackSink"),
+        patch("vokel.web.SileroVadTurnProducer"),
+        patch("vokel.web.SherpaOfflineAsr"),
+        patch("vokel.web.BeatTrackPlayer"),
+        patch("vokel.web.ConversationEngine", return_value=mock_engine),
+    )
 
 
 def test_root_endpoint_returns_api_status() -> None:
@@ -146,7 +197,7 @@ def test_websocket_browser_mode_flow(
     # Mock Kokoro and its create_stream
     mock_kokoro = MagicMock()
     mock_kokoro_class.return_value = mock_kokoro
-
+    
     async def dummy_kokoro_stream(*args: any, **kwargs: any):
         yield np.zeros(1000, dtype=np.float32), 24000
 
@@ -217,7 +268,7 @@ def test_websocket_barge_in_bypasses(
             "type": "start_session",
             "mode": "browser",
         })
-
+        
         receive_expected(websocket, ("session_started",))
         receive_expected(websocket, ("status",))
 
@@ -280,6 +331,309 @@ def test_websocket_execute_consent_scaffold() -> None:
         while cancelled["armed"] is not False:
             cancelled = receive_expected(websocket, ("execute_state",))
         assert cancelled["armed"] is False
+
+
+def test_websocket_musical_mode_wraps_local_sink_and_emits_beats() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+
+    patches = _local_session_patches()
+    with (
+        patches[0] as _health,
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3] as _vad,
+        patches[4] as _asr,
+        patches[5] as mock_beat_track_class,
+        patches[6] as _engine_class,
+        patch("vokel.web.QuantizedPlaybackSink", wraps=QuantizedPlaybackSink) as qps_mock,
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+        mock_beat_track_class.return_value.start = AsyncMock()
+        mock_beat_track_class.return_value.stop = AsyncMock()
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+                "musical_mode": True,
+                "musical_bpm": 120,
+            })
+            started = receive_expected(websocket, ("session_started",))
+            assert started["mode"] == "local"
+            beats = collect_messages(websocket, target_type="beat", count=2, timeout_seconds=2.0)
+            assert len(beats) == 2
+            assert beats[0]["bpm"] == 120
+            qps_mock.assert_called_once()
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
+
+
+def test_websocket_musical_mode_off_does_not_wrap_sink() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+
+    patches = _local_session_patches()
+    with (
+        patches[0],
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3],
+        patches[4],
+        patches[5],
+        patches[6] as mock_engine_class,
+        patch("vokel.web.QuantizedPlaybackSink") as qps_mock,
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+            })
+            receive_expected(websocket, ("session_started",))
+            qps_mock.assert_not_called()
+            mock_engine_class.assert_called_once()
+            assert "config" not in mock_engine_class.call_args.kwargs
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
+
+
+def test_websocket_musical_mode_passes_rap_system_prompt() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+
+    patches = _local_session_patches()
+    with (
+        patches[0],
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3],
+        patches[4],
+        patches[5] as mock_beat_track_class,
+        patches[6] as mock_engine_class,
+        patch("vokel.web.QuantizedPlaybackSink", wraps=QuantizedPlaybackSink),
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+        mock_beat_track_class.return_value.start = AsyncMock()
+        mock_beat_track_class.return_value.stop = AsyncMock()
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+                "musical_mode": True,
+                "musical_bpm": 120,
+            })
+            receive_expected(websocket, ("session_started",))
+            mock_engine_class.assert_called_once()
+            config = mock_engine_class.call_args.kwargs["config"]
+            assert "120 BPM" in config.system_prompt
+            assert "rapper" in config.system_prompt.lower()
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
+
+
+def test_websocket_musical_bpm_is_clamped() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+
+    patches = _local_session_patches()
+    with (
+        patches[0],
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3],
+        patches[4],
+        patches[5] as mock_beat_track_class,
+        patches[6],
+        patch("vokel.web.BeatClock", wraps=BeatClock) as clock_mock,
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+        mock_beat_track_class.return_value.start = AsyncMock()
+        mock_beat_track_class.return_value.stop = AsyncMock()
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+                "musical_mode": True,
+                "musical_bpm": 240,
+            })
+            receive_expected(websocket, ("session_started",))
+            clock_mock.assert_called_with(bpm=160.0)
+            beats = collect_messages(websocket, target_type="beat", count=1, timeout_seconds=1.0)
+            assert beats[0]["bpm"] == 160.0
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
+
+
+def test_websocket_musical_mode_teardown_stops_clock() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+    clocks: list[BeatClock] = []
+
+    def capture_clock(*args: Any, **kwargs: Any) -> BeatClock:
+        clock = BeatClock(*args, **kwargs)
+        clocks.append(clock)
+        return clock
+
+    patches = _local_session_patches()
+    with (
+        patches[0],
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3],
+        patches[4],
+        patches[5] as mock_beat_track_class,
+        patches[6],
+        patch("vokel.web.BeatClock", side_effect=capture_clock),
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+        mock_beat_track_class.return_value.start = AsyncMock()
+        mock_beat_track_class.return_value.stop = AsyncMock()
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+                "musical_mode": True,
+            })
+            receive_expected(websocket, ("session_started",))
+            assert len(clocks) == 1
+            assert clocks[0].running is True
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
+            assert clocks[0].running is False
+
+
+def test_websocket_set_musical_level_routes_to_beat_track() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+    mock_beat_track = MagicMock()
+    mock_beat_track.start = AsyncMock()
+    mock_beat_track.stop = AsyncMock()
+
+    patches = _local_session_patches()
+    with (
+        patches[0],
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3],
+        patches[4],
+        patches[5] as mock_beat_track_class,
+        patches[6],
+        patch("vokel.web.QuantizedPlaybackSink", wraps=QuantizedPlaybackSink),
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+        mock_beat_track_class.return_value = mock_beat_track
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+                "musical_mode": True,
+                "musical_level": 0.5,
+            })
+            receive_expected(websocket, ("session_started",))
+            collect_messages(websocket, target_type="beat", count=1, timeout_seconds=1.0)
+            mock_beat_track_class.assert_called_once()
+            assert mock_beat_track_class.call_args.kwargs["level"] == 0.5
+            websocket.send_json({"type": "set_musical_level", "level": 0.35})
+            collect_messages(websocket, target_type="beat", count=1, timeout_seconds=1.0)
+            mock_beat_track.set_level.assert_called_once_with(0.35)
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
+
+
+def test_websocket_set_musical_level_ignores_malformed_level() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+    mock_beat_track = MagicMock()
+    mock_beat_track.start = AsyncMock()
+    mock_beat_track.stop = AsyncMock()
+
+    patches = _local_session_patches()
+    with (
+        patches[0],
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3],
+        patches[4],
+        patches[5] as mock_beat_track_class,
+        patches[6],
+        patch("vokel.web.QuantizedPlaybackSink", wraps=QuantizedPlaybackSink),
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+        mock_beat_track_class.return_value = mock_beat_track
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+                "musical_mode": True,
+            })
+            receive_expected(websocket, ("session_started",))
+            collect_messages(websocket, target_type="beat", count=1, timeout_seconds=1.0)
+            websocket.send_json({"type": "set_musical_level", "level": "loud"})
+            collect_messages(websocket, target_type="beat", count=1, timeout_seconds=1.0)
+            mock_beat_track.set_level.assert_not_called()
+            websocket.send_json({"type": "set_musical_level", "level": 0.2})
+            collect_messages(websocket, target_type="beat", count=1, timeout_seconds=1.0)
+            mock_beat_track.set_level.assert_called_once_with(0.2)
+            beats = collect_messages(websocket, target_type="beat", count=1, timeout_seconds=1.0)
+            assert len(beats) == 1
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
 
 
 def test_detect_voice_session_command_pause() -> None:

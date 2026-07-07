@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .telemetry import LatencyTrace
-from .turns import AudioTurn
+from ..telemetry import LatencyTrace
+from ..turns import AudioTurn
 
 
 class AudioDependencyError(RuntimeError):
