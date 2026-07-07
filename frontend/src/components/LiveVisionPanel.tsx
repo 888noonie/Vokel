@@ -41,6 +41,7 @@ interface LiveVisionPanelProps {
   registerFrameGrabber?: (grab: (() => string | null) | null) => void;
   onVoiceContextEnabledChange: (enabled: boolean) => void;
   onSelectedDeviceChange: (device: string) => void;
+  onStatusChange?: (status: { label: string; aiViewing: boolean }) => void;
 }
 
 const defaultPrompt = "Describe only what is visible in this image in one short sentence.";
@@ -57,6 +58,7 @@ export function LiveVisionPanel({
   registerFrameGrabber,
   onVoiceContextEnabledChange,
   onSelectedDeviceChange,
+  onStatusChange,
 }: LiveVisionPanelProps) {
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState("");
@@ -357,34 +359,18 @@ export function LiveVisionPanel({
         ? "Live feed"
         : "Camera idle";
 
-  const statusTone = aiViewing
-    ? "border-rose-500/45 bg-rose-500/15 text-rose-100"
-    : isAiWatchLoop
-      ? "border-purple-500/35 bg-purple-500/10 text-purple-200"
-      : liveFeedActive
-        ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
-        : "border-zinc-700 bg-zinc-950 text-zinc-500";
+  useEffect(() => {
+    onStatusChange?.({ label: statusLabel, aiViewing });
+  }, [aiViewing, onStatusChange, statusLabel]);
 
   return (
-    <section className="vokel-panel overflow-hidden rounded-3xl">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-4 sm:px-6">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-zinc-300 font-mono">
-            <Eye className="h-4 w-4 text-purple-400" />
-            <span>Local Vision Window</span>
-          </div>
-          <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
-            Live Feed previews your browser cameras — show one or both at once. AI captures use the device selected below.
-          </p>
-        </div>
-        <span
-          className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${statusTone}`}
-        >
-          {statusLabel}
-        </span>
-      </div>
+    <div>
+      <p className="mb-4 text-[11px] leading-relaxed text-zinc-500">
+        Live Feed previews your browser cameras — show one or both at once. AI captures use the device
+        selected below.
+      </p>
 
-      <div className="grid gap-0 lg:grid-cols-[minmax(0,1.35fr)_minmax(250px,0.65fr)]">
+      <div className="grid gap-0 overflow-hidden rounded-2xl border border-white/10 lg:grid-cols-[minmax(0,1.35fr)_minmax(250px,0.65fr)]">
         <div className="relative min-h-72 overflow-hidden bg-black/60">
           {showLiveVideo && (
             <div
@@ -676,6 +662,6 @@ export function LiveVisionPanel({
           </div>
         </div>
       </div>
-    </section>
+    </div>
   );
 }

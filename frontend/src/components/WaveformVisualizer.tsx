@@ -115,9 +115,9 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ status, 
   }, [status, volume]);
 
   return (
-    <div className="vokel-panel-subtle rounded-3xl p-4 h-32 sm:h-40 flex flex-col justify-between overflow-hidden">
+    <div className="vokel-panel-subtle rounded-2xl p-4 h-32 sm:h-40 flex flex-col justify-between overflow-hidden">
       <div className="flex justify-between gap-4 text-[11px] sm:text-xs text-zinc-500 font-medium select-none">
-        <span>AUDIO PIPELINE SPECTRUM</span>
+        <span>Pipeline status</span>
         <span className="uppercase font-mono">{status}</span>
       </div>
       <canvas ref={canvasRef} className="w-full h-20 sm:h-24 block" />

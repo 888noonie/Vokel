@@ -51,11 +51,8 @@ export function BeatIndicator({
   const activeBeat = beatPulse?.beat ?? 0;
 
   return (
-    <div className="vokel-panel rounded-3xl px-5 py-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-500">
-          Musical Grid
-        </div>
+    <div>
+      <div className="flex items-center justify-end gap-3">
         <span
           className={`beat-pocket-badge text-[10px] font-mono uppercase tracking-wide ${
             inPocket ? "beat-pocket-badge--live" : ""

@@ -21,6 +21,8 @@ import {
   Volume2,
   VolumeX,
   Loader2,
+  Eye,
+  Aperture,
 } from "lucide-react";
 import { LatencyScoreboard } from "./components/LatencyScoreboard";
 import { WaveformVisualizer } from "./components/WaveformVisualizer";
@@ -37,6 +39,7 @@ import { LiveVisionPanel } from "./components/LiveVisionPanel";
 import type { VisionFrame } from "./components/LiveVisionPanel";
 import { BeatIndicator } from "./components/BeatIndicator";
 import type { BeatPulse } from "./components/BeatIndicator";
+import { CollapsibleSection } from "./components/CollapsibleSection";
 
 type Mode = "local" | "browser";
 type AgentBackend = "builtin" | "hermes";
@@ -211,6 +214,11 @@ function App() {
     action: "start_live" | "stop_live";
     nonce: number;
   } | null>(null);
+  const [visionPanelStatus, setVisionPanelStatus] = useState<{
+    label: string;
+    aiViewing: boolean;
+  }>({ label: "Camera idle", aiViewing: false });
+  const [beatCollapsedPulse, setBeatCollapsedPulse] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   // Set by LiveVisionPanel; grabs one JPEG from the live preview on the server's request.
@@ -305,6 +313,9 @@ function App() {
   const handleTapTempo = useCallback(() => {
     const now = performance.now();
     const times = tapTempoTimesRef.current;
+    if (times.length > 0 && now - times[times.length - 1] > 2000) {
+      times.length = 0;
+    }
     times.push(now);
     if (times.length > 5) {
       times.shift();
@@ -320,6 +331,20 @@ function App() {
     const averageMs = recent.reduce((sum, value) => sum + value, 0) / recent.length;
     const nextBpm = Math.round(60000 / averageMs);
     setMusicalBpm(Math.min(160, Math.max(60, Math.round(nextBpm / 5) * 5)));
+  }, []);
+
+  useEffect(() => {
+    if (!beatPulse) {
+      setBeatCollapsedPulse(false);
+      return;
+    }
+    setBeatCollapsedPulse(true);
+    const timer = window.setTimeout(() => setBeatCollapsedPulse(false), 180);
+    return () => window.clearTimeout(timer);
+  }, [beatPulse?.receivedAt]);
+
+  const clearMusicalTrack = useCallback(() => {
+    setMusicalTrackInfo(null);
   }, []);
 
   const uploadMusicalTrack = useCallback(async (file: File) => {
@@ -1080,6 +1105,38 @@ function App() {
       : llmConnection === "jan"
         ? "Jan serves the model on this machine. Vokel handles speech; Jan handles text generation."
         : "LM Studio serves the model and can own MCP tools. Enable native MCP below if you use ~/.lmstudio/mcp.json.";
+  const sessionStatusBadge = (
+    <span
+      className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+        isPaused
+          ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+          : status === "listening"
+            ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
+            : status === "capturing_vision"
+              ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
+              : status === "generating" || status === "speaking"
+                ? "border-blue-500/25 bg-blue-500/10 text-blue-300"
+                : "border-zinc-800 bg-zinc-950 text-zinc-500"
+      }`}
+    >
+      {isPaused ? "Paused" : status}
+    </span>
+  );
+  const beatCollapsedBadge =
+    musicalMode && isSessionActive ? (
+      <span
+        className={`beat-indicator-dot beat-indicator-dot--downbeat ${
+          beatCollapsedPulse ? "beat-indicator-dot--active" : ""
+        }`}
+        aria-hidden
+      />
+    ) : null;
+  const visionCollapsedBadge = visionPanelStatus.aiViewing ? (
+    <span className="flex items-center gap-1.5 rounded-full border border-rose-400/50 bg-rose-950/85 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-50">
+      <Aperture className="h-3 w-3 animate-pulse" />
+      AI viewing
+    </span>
+  ) : null;
   const llmEndpointLabel =
     llmConnection === "jan"
       ? "Jan API Endpoint"
@@ -1165,30 +1222,16 @@ function App() {
       <main className="safe-container flex-1 py-6 sm:py-8 grid grid-cols-1 xl:grid-cols-[minmax(280px,360px)_1fr] gap-5 lg:gap-7">
         {/* Left column: Controls & settings */}
         <div className="space-y-5 lg:space-y-6">
-          {/* Active Session Status Card */}
-          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase flex items-center space-x-2">
+          <CollapsibleSection
+            id="session-control"
+            title={
+              <span className="flex items-center space-x-2">
                 <Cpu className="w-4 h-4 text-purple-400" />
                 <span>Session Control</span>
-              </h2>
-              <span
-                className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
-                  isPaused
-                    ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
-                    : status === "listening"
-                      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-300"
-                      : status === "capturing_vision"
-                        ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
-                      : status === "generating" || status === "speaking"
-                        ? "border-blue-500/25 bg-blue-500/10 text-blue-300"
-                        : "border-zinc-800 bg-zinc-950 text-zinc-500"
-                }`}
-              >
-                {isPaused ? "Paused" : status}
               </span>
-            </div>
-
+            }
+            badge={sessionStatusBadge}
+          >
             <div className="space-y-4">
               <div className="flex rounded-xl bg-zinc-950 p-1 border border-zinc-900">
                 <button
@@ -1335,15 +1378,17 @@ function App() {
                 )}
               </div>
             </div>
-          </div>
+          </CollapsibleSection>
 
-          {/* Connection */}
-          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
-            <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
-              <Bot className="w-4 h-4 text-purple-400" />
-              <span>Connection</span>
-            </h2>
-
+          <CollapsibleSection
+            id="connection"
+            title={
+              <span className="flex items-center space-x-2">
+                <Bot className="w-4 h-4 text-purple-400" />
+                <span>Connection</span>
+              </span>
+            }
+          >
             <p className="text-[11px] leading-relaxed text-zinc-500 mb-3">
               Vokel handles voice. Pick where the model runs.
             </p>
@@ -1466,25 +1511,29 @@ function App() {
                 )}
               </div>
             )}
-          </div>
+          </CollapsibleSection>
 
-          {/* Platform Capabilities */}
-          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
-            <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
-              <Wrench className="w-4 h-4 text-purple-400" />
-              <span>Platform Capabilities</span>
-            </h2>
-
+          <CollapsibleSection
+            id="platform-capabilities"
+            title={
+              <span className="flex items-center space-x-2">
+                <Wrench className="w-4 h-4 text-purple-400" />
+                <span>Platform Capabilities</span>
+              </span>
+            }
+          >
             <p className="text-[11px] leading-relaxed text-zinc-500">{platformCapabilitiesCopy}</p>
-          </div>
+          </CollapsibleSection>
 
-          {/* Model Configuration / Settings */}
-          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
-            <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
-              <Settings className="w-4 h-4 text-purple-400" />
-              <span>Model & Pipeline Specs</span>
-            </h2>
-
+          <CollapsibleSection
+            id="model-pipeline"
+            title={
+              <span className="flex items-center space-x-2">
+                <Settings className="w-4 h-4 text-purple-400" />
+                <span>Model & Pipeline Specs</span>
+              </span>
+            }
+          >
             <div className="space-y-4">
               {llmConnection !== "hermes" && (
                 <>
@@ -1734,6 +1783,20 @@ function App() {
                         </button>
                       ))}
                     </div>
+                    {musicalTrackInfo && (
+                      <p className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-mono text-zinc-500">
+                        <span>
+                          Uploaded track overrides {musicalStyle === "beat" ? "Beat Loop" : "Metronome"}.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={clearMusicalTrack}
+                          className="text-purple-300 underline-offset-2 hover:text-purple-200 hover:underline"
+                        >
+                          Clear track
+                        </button>
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -1855,14 +1918,17 @@ function App() {
                 </span>
               </button>
             </div>
-          </div>
+          </CollapsibleSection>
 
-          <div className="vokel-panel rounded-3xl p-5 sm:p-6">
-            <h2 className="text-sm font-bold text-zinc-400 tracking-wider font-mono uppercase mb-4 flex items-center space-x-2">
-              <Brain className="w-4 h-4 text-purple-400" />
-              <span>Memory Notes</span>
-            </h2>
-
+          <CollapsibleSection
+            id="memory-notes"
+            title={
+              <span className="flex items-center space-x-2">
+                <Brain className="w-4 h-4 text-purple-400" />
+                <span>Memory Notes</span>
+              </span>
+            }
+          >
             <div className="space-y-3">
               <div className="flex gap-2">
                 <input
@@ -1932,7 +1998,7 @@ function App() {
                 <span>EXPORT .MD</span>
               </button>
             </div>
-          </div>
+          </CollapsibleSection>
         </div>
 
         {/* Right column: Spectrums and Transcript (2 columns wide) */}
@@ -1984,33 +2050,72 @@ function App() {
             </div>
           </div>
 
-          <BeatIndicator
-            musicalMode={musicalMode}
-            isSessionActive={isSessionActive}
-            beatPulse={beatPulse}
-            musicalLevel={musicalLevel}
-            onMusicalLevelChange={handleMusicalLevelChange}
-            onMusicalNudge={sendMusicalNudge}
-          />
+          {musicalMode && isSessionActive && (
+            <CollapsibleSection
+              id="beat-indicator"
+              title={
+                <span className="flex items-center space-x-2">
+                  <Radio className="w-4 h-4 text-purple-400" />
+                  <span>Musical Grid</span>
+                </span>
+              }
+              badge={beatCollapsedBadge}
+            >
+              <BeatIndicator
+                musicalMode={musicalMode}
+                isSessionActive={isSessionActive}
+                beatPulse={beatPulse}
+                musicalLevel={musicalLevel}
+                onMusicalLevelChange={handleMusicalLevelChange}
+                onMusicalNudge={sendMusicalNudge}
+              />
+            </CollapsibleSection>
+          )}
 
-          {/* Waveform visualizer (detailed audio pipeline) */}
-          <WaveformVisualizer status={status} volume={isStreaming ? micVolume : 0} />
+          <CollapsibleSection
+            id="waveform-visualizer"
+            title={
+              <span className="flex items-center space-x-2">
+                <Volume2 className="w-4 h-4 text-purple-400" />
+                <span>Audio Pipeline Spectrum</span>
+              </span>
+            }
+            badge={
+              <span className="text-[10px] font-mono uppercase tracking-wide text-zinc-500">
+                {status}
+              </span>
+            }
+          >
+            <WaveformVisualizer status={status} volume={isStreaming ? micVolume : 0} />
+          </CollapsibleSection>
 
-          <LiveVisionPanel
-            visionUrl={llmConnection === "hermes" ? hermesUrl : lmStudioUrl}
-            visionModel={llmConnection === "hermes" ? hermesModel : lmStudioModel}
-            visionApiKey={llmConnection === "hermes" ? hermesApiKey : ""}
-            visionBackend={llmConnection === "hermes" ? "hermes" : "local"}
-            voiceContextEnabled={visionVoiceEnabled}
-            voiceContextFrame={voiceVisionFrame}
-            sessionStatus={status}
-            liveControlSignal={liveVisionControl}
-            registerFrameGrabber={(grab) => {
-              capturePreviewFrameRef.current = grab;
-            }}
-            onVoiceContextEnabledChange={handleVisionVoiceEnabledChange}
-            onSelectedDeviceChange={handleVisionDeviceChange}
-          />
+          <CollapsibleSection
+            id="live-vision"
+            title={
+              <span className="flex items-center space-x-2">
+                <Eye className="w-4 h-4 text-purple-400" />
+                <span>Local Vision Window</span>
+              </span>
+            }
+            badge={visionCollapsedBadge}
+          >
+            <LiveVisionPanel
+              visionUrl={llmConnection === "hermes" ? hermesUrl : lmStudioUrl}
+              visionModel={llmConnection === "hermes" ? hermesModel : lmStudioModel}
+              visionApiKey={llmConnection === "hermes" ? hermesApiKey : ""}
+              visionBackend={llmConnection === "hermes" ? "hermes" : "local"}
+              voiceContextEnabled={visionVoiceEnabled}
+              voiceContextFrame={voiceVisionFrame}
+              sessionStatus={status}
+              liveControlSignal={liveVisionControl}
+              registerFrameGrabber={(grab) => {
+                capturePreviewFrameRef.current = grab;
+              }}
+              onVoiceContextEnabledChange={handleVisionVoiceEnabledChange}
+              onSelectedDeviceChange={handleVisionDeviceChange}
+              onStatusChange={setVisionPanelStatus}
+            />
+          </CollapsibleSection>
 
           {/* Near-transcript session controls (UI-1) */}
           <div className="vokel-panel rounded-2xl p-3 sm:p-4 sticky top-20 z-20">
