@@ -107,6 +107,11 @@ class BeatTrackPlayer:
         self._cursor = 0
         self._external_buffer = True
 
+    def clear_buffer(self) -> None:
+        self._external_buffer = False
+        self._cursor = 0
+        self._buffer = self._render_bar() if self._stream is not None else None
+
     def nudge_cursor(self, ms: float) -> None:
         buffer = self._buffer
         if buffer is None or len(buffer) == 0:

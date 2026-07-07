@@ -69,6 +69,19 @@ class BeatTrackPlayerTests(unittest.TestCase):
         self.assertEqual(player._cursor, 0)
         self.assertEqual(len(player._buffer), len(samples))
 
+    def test_clear_buffer_falls_back_to_synthesized_bar(self) -> None:
+        player = BeatTrackPlayer(bpm=120.0, style="beat")
+        samples = np.ones(2400, dtype=np.float32) * 0.5
+        player.load_buffer(samples)
+        player._stream = object()
+        self.assertTrue(player._external_buffer)
+
+        player.clear_buffer()
+        self.assertFalse(player._external_buffer)
+        self.assertEqual(player._cursor, 0)
+        self.assertIsNotNone(player._buffer)
+        self.assertGreater(float(np.max(np.abs(player._buffer))), 0.01)
+
     def test_load_buffer_respects_level_scaling(self) -> None:
         player = BeatTrackPlayer(bpm=120.0, level=0.25)
         samples = np.ones(120, dtype=np.float32) * 0.8

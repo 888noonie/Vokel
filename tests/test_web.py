@@ -793,6 +793,45 @@ def test_upload_musical_track_returns_503_when_ffmpeg_missing() -> None:
         _musical_track_slots.pop(slot_id, None)
 
 
+def test_delete_musical_track_returns_404_for_unknown_slot() -> None:
+    client = TestClient(app)
+    response = client.delete(
+        "/api/musical/track",
+        params={"slot": "unknownslot1234"},
+    )
+    assert response.status_code == 404
+    assert "Unknown musical track slot" in response.json()["detail"]
+
+
+def test_delete_musical_track_clears_slot_and_live_player() -> None:
+    from vokel.audio.beattrack import BeatTrackPlayer
+
+    slot_id = "clearslot12345678"
+    samples = np.linspace(-0.1, 0.1, 1200, dtype=np.float32)
+    player = BeatTrackPlayer(bpm=120.0)
+    player.load_buffer(samples)
+    player._stream = object()
+    _musical_track_slots[slot_id] = _MusicalTrackSlot(buffer=samples, player=player)
+
+    try:
+        client = TestClient(app)
+        response = client.delete(
+            "/api/musical/track",
+            params={"slot": slot_id},
+        )
+        assert response.status_code == 204
+        assert response.content == b""
+        slot = _musical_track_slots[slot_id]
+        assert slot.buffer is None
+        assert slot.player is not None
+        assert not player._external_buffer
+        assert player._buffer is not None
+        assert float(np.max(np.abs(player._buffer))) > 0.01
+        assert player._cursor == 0
+    finally:
+        _musical_track_slots.pop(slot_id, None)
+
+
 def test_upload_musical_track_rejects_bad_decode() -> None:
     from vokel.audio.beattrack import MusicalTrackDecodeError
 

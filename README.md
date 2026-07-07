@@ -299,17 +299,29 @@ See `docs/agent-extensions.md` for details.
 ## Musical mode (experimental)
 
 Musical mode is an optional layer that keeps the normal voice loop intact while adding a
-drift-corrected beat grid, a low synthesized backing loop, and beat-aligned TTS phrase starts.
+drift-corrected beat grid, a synthesized or loaded backing track, and beat-aligned TTS phrase
+starts. The model is prompted to perform as a rapper over the beat rather than describe it.
 
 - Toggle it in **Settings → Musical Mode** (persisted in `vokel.voicePrefs.v1`).
-- Set tempo with the **60–160 BPM** slider (step 5; default 90).
+- Set tempo with the **60–160 BPM** slider (step 5; default 90), or tap the **Tap** button to
+  set it by ear.
+- Pick a **Backing Style**: synthesized **Beat Loop** (kick + hat) or **Metronome** (click track).
+- **Load Track**: upload an mp3/wav/flac/AAC/OGG/ALAC file as the backing track instead of the
+  synthesized loop (ffmpeg-decoded server-side, 50 MB / 15 min caps). Use the **±25ms** align
+  buttons on the beat panel to correct drift by ear, or **Clear track** to fall back to the
+  synthesized style.
+- Live **Beat Level** slider mixes the backing track under the voice.
 - **Local hardware + Kokoro or spd-say only** for now. Browser-audio and Hermes playback
   paths stay unquantized in Phase 1.
 - When off, behavior and payloads stay at safe defaults (`musical_mode: false`).
+- Settings panels (Session Control, Connection, Musical Grid, Local Vision Window, etc.) are
+  individually collapsible with state persisted in `vokel.panelState.v1`, so the UI stays
+  navigable once a session is running.
 
 Phase 2 ideas (not started): sidechain ducking under TTS, syllable-level cadence prosody,
-browser-audio quantization, and deriving the beat clock from the audio stream frame counter
-instead of asyncio timing.
+browser-audio quantization, automatic beat detection (librosa) for loaded tracks, and deriving
+the beat clock from the audio stream frame counter instead of asyncio timing (the manual nudge
+control covers drift correction in the meantime).
 
 ## Test
 

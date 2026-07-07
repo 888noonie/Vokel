@@ -15,7 +15,7 @@ from typing import Any, Callable, Coroutine, Literal
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -116,6 +116,15 @@ def _apply_musical_track_buffer(slot_id: str, samples: np.ndarray) -> None:
     slot.buffer = samples
     if slot.player is not None:
         slot.player.load_buffer(samples)
+
+
+def _clear_musical_track_buffer(slot_id: str) -> None:
+    slot = _musical_track_slots.get(slot_id)
+    if slot is None:
+        return
+    slot.buffer = None
+    if slot.player is not None:
+        slot.player.clear_buffer()
 
 
 VoiceSessionCommand = Literal["pause", "resume"]
@@ -415,6 +424,16 @@ async def upload_musical_track(
     finally:
         if upload_path is not None:
             upload_path.unlink(missing_ok=True)
+
+
+@app.delete("/api/musical/track", status_code=204)
+async def delete_musical_track(
+    slot: str = Query(..., min_length=8, max_length=64),
+) -> Response:
+    if slot not in _musical_track_slots:
+        raise HTTPException(status_code=404, detail="Unknown musical track slot")
+    _clear_musical_track_buffer(slot)
+    return Response(status_code=204)
 
 
 @app.websocket("/api/ws")

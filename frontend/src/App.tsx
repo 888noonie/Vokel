@@ -343,8 +343,26 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [beatPulse?.receivedAt]);
 
-  const clearMusicalTrack = useCallback(() => {
+  const clearMusicalTrack = useCallback(async () => {
+    const slot = musicalTrackSlotRef.current;
     setMusicalTrackInfo(null);
+    if (!slot) {
+      return;
+    }
+    try {
+      const response = await fetch(`/api/musical/track?slot=${encodeURIComponent(slot)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        console.debug(
+          "Backing track clear failed:",
+          typeof payload.detail === "string" ? payload.detail : response.status
+        );
+      }
+    } catch (clearError) {
+      console.debug("Backing track clear failed:", clearError);
+    }
   }, []);
 
   const uploadMusicalTrack = useCallback(async (file: File) => {
