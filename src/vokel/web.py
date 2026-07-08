@@ -98,6 +98,7 @@ _MUSICAL_STYLES = frozenset({"beat", "metronome"})
 class _MusicalTrackSlot:
     buffer: np.ndarray | None = None
     player: BeatTrackPlayer | None = None
+    filename: str | None = None
 
 
 _musical_track_slots: dict[str, _MusicalTrackSlot] = {}
@@ -124,6 +125,7 @@ def _clear_musical_track_buffer(slot_id: str) -> None:
     if slot is None:
         return
     slot.buffer = None
+    slot.filename = None
     if slot.player is not None:
         slot.player.clear_buffer()
 
@@ -418,6 +420,9 @@ async def upload_musical_track(
             )
 
         _apply_musical_track_buffer(slot, samples)
+        raw_name = Path(file.filename).name if file.filename else ""
+        track_slot = _musical_track_slots[slot]
+        track_slot.filename = raw_name[:80] if raw_name else None
         return {
             "duration_seconds": float(samples.size) / MUSICAL_TRACK_SAMPLE_RATE,
             "samples": int(samples.size),
@@ -1103,6 +1108,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         except (TypeError, ValueError):
                             musical_level = 1.0
                         musical_style = _parse_musical_style(data.get("musical_style"))
+                        session_context = " ".join(
+                            str(data.get("session_context", "")).split()
+                        )[:200]
+                        _mishearing_sentence = (
+                            " The user's words arrive via imperfect speech-to-text; "
+                            "interpret likely mishearings in favor of this topic "
+                            "(e.g. 'wrap' when the topic is rap)."
+                        )
                         voice_loop_config: VoiceLoopConfig | None = None
                         if (
                             musical_mode
@@ -1128,16 +1141,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 trace=trace,
                             )
                             base = VoiceLoopConfig()
-                            voice_loop_config = VoiceLoopConfig(
-                                system_prompt=base.system_prompt + (
-                                    f" You are currently performing over a live beat at "
-                                    f"{musical_bpm:.0f} BPM. "
-                                    "Deliver every reply as short rhythmic rap lines with rhyme "
-                                    "and flow, a few words per line, so each phrase lands on the "
-                                    "beat. You are the rapper — never say you are playing, "
-                                    "finding, queueing, or displaying a track or lyrics; speak "
-                                    "the bars yourself."
+                            performance_addendum = (
+                                f" You are currently performing over a live beat at "
+                                f"{musical_bpm:.0f} BPM. "
+                                "Deliver every reply as short rhythmic rap lines with rhyme "
+                                "and flow, a few words per line, so each phrase lands on the "
+                                "beat. You are the rapper — never say you are playing, "
+                                "finding, queueing, or displaying a track or lyrics; speak "
+                                "the bars yourself."
+                            )
+                            if session_context:
+                                performance_addendum += (
+                                    f" The performance topic is: {session_context}."
                                 )
+                                if track_slot is not None and track_slot.filename:
+                                    performance_addendum += (
+                                        f" The backing track file is named "
+                                        f"'{track_slot.filename}' — treat the name as "
+                                        "a hint about the vibe."
+                                    )
+                                performance_addendum += _mishearing_sentence
+                            voice_loop_config = VoiceLoopConfig(
+                                system_prompt=base.system_prompt + performance_addendum
                             )
                             beat_clock = musical_clock
 
@@ -1157,6 +1182,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                     logger.debug("beat forwarder exited: %s", exc)
 
                             beat_forward_task = asyncio.create_task(forward_beats())
+                        elif session_context:
+                            base = VoiceLoopConfig()
+                            voice_loop_config = VoiceLoopConfig(
+                                system_prompt=base.system_prompt + (
+                                    f" Session topic: {session_context}."
+                                    f"{_mishearing_sentence}"
+                                )
+                            )
 
                         # Configure offline ASR and VAD
                         vad_model_path = data.get("vad_model", "models/silero_vad.onnx")

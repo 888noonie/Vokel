@@ -152,6 +152,7 @@ function App() {
     musicalBpm: 90,
     musicalLevel: 1,
     musicalStyle: "beat",
+    sessionContext: "",
   });
   const savedConnection = loadJson<{ provider?: LlmConnection }>(connectionPrefsKey, {
     provider: "jan",
@@ -181,6 +182,9 @@ function App() {
   );
   const [musicalStyle, setMusicalStyle] = useState<"beat" | "metronome">(
     savedVoicePrefs.musicalStyle === "metronome" ? "metronome" : "beat"
+  );
+  const [sessionContext, setSessionContext] = useState(
+    typeof savedVoicePrefs.sessionContext === "string" ? savedVoicePrefs.sessionContext : ""
   );
   const [musicalTrackInfo, setMusicalTrackInfo] = useState<{
     durationSeconds: number;
@@ -257,6 +261,7 @@ function App() {
         musicalBpm,
         musicalLevel,
         musicalStyle,
+        sessionContext,
       })
     );
   }, [
@@ -269,6 +274,7 @@ function App() {
     musicalBpm,
     musicalLevel,
     musicalStyle,
+    sessionContext,
   ]);
 
   const sendMusicalLevel = useCallback(
@@ -836,6 +842,7 @@ function App() {
         musical_bpm: musicalBpm,
         musical_level: musicalLevel,
         musical_style: musicalStyle,
+        session_context: sessionContext,
       })
     );
   };
@@ -1750,6 +1757,27 @@ function App() {
                   onChange={(e) => setTtsSpeed(Number(e.target.value))}
                   className="w-full accent-purple-500"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
+                  {musicalMode
+                    ? "What are we rapping about?"
+                    : "What are we going to talk about?"}
+                </label>
+                <input
+                  type="text"
+                  maxLength={200}
+                  value={sessionContext}
+                  onChange={(e) => setSessionContext(e.target.value)}
+                  placeholder="optional — grounds the session topic"
+                  className="w-full rounded-xl border border-zinc-850 bg-zinc-950 px-3 py-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-purple-500/40 focus:outline-none"
+                />
+                {isSessionActive && (
+                  <p className="mt-1.5 text-[10px] font-mono text-zinc-500">
+                    applies on next session start
+                  </p>
+                )}
               </div>
 
               <button

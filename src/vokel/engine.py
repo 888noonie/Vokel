@@ -1274,13 +1274,17 @@ class ConversationEngine:
         if self.agent_mode == "hermes":
             # Preserve multimodal current_user_message (e.g. visual with image_url block)
             # so that extract_camera_frame() in Hermes clients receives the armed frame.
-            # Hermes still uses minimal context (it owns full history/session).
+            # Hermes owns full history/session, but the session system prompt (persona,
+            # musical addendum, session topic) must still ride along — the Hermes
+            # clients join all system messages into per-request instructions.
             if current_user_message is not None:
                 return [
+                    {"role": "system", "content": self._session_system_prompt()},
                     {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT},
                     current_user_message,
                 ]
             return [
+                {"role": "system", "content": self._session_system_prompt()},
                 {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT},
                 {"role": "user", "content": user_text},
             ]

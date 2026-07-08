@@ -478,6 +478,197 @@ def test_websocket_musical_mode_passes_rap_system_prompt() -> None:
             receive_expected(websocket, ("session_stopped",))
 
 
+def test_websocket_session_context_empty_keeps_voice_loop_config_none() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+
+    patches = _local_session_patches()
+    with (
+        patches[0],
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3],
+        patches[4],
+        patches[5],
+        patches[6] as mock_engine_class,
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+                "session_context": "   \t  ",
+            })
+            receive_expected(websocket, ("session_started",))
+            mock_engine_class.assert_called_once()
+            assert "config" not in mock_engine_class.call_args.kwargs
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
+
+
+def test_websocket_session_context_non_musical_injects_topic_and_mishearing() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+
+    patches = _local_session_patches()
+    with (
+        patches[0],
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3],
+        patches[4],
+        patches[5],
+        patches[6] as mock_engine_class,
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+                "session_context": "  rapping   about   breakfast  " + ("x" * 250),
+            })
+            receive_expected(websocket, ("session_started",))
+            mock_engine_class.assert_called_once()
+            config = mock_engine_class.call_args.kwargs["config"]
+            prompt = config.system_prompt
+            assert "Session topic:" in prompt
+            assert "rapping about breakfast" in prompt
+            assert "imperfect speech-to-text" in prompt
+            assert "'wrap' when the topic is rap" in prompt
+            # whitespace collapsed + 200-char cap
+            topic_part = prompt.split("Session topic: ", 1)[1]
+            topic_text = topic_part.split(". The user's words", 1)[0]
+            assert "  " not in topic_text
+            assert len(topic_text) <= 200
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
+
+
+def test_websocket_musical_mode_context_with_track_orders_addendum() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+
+    slot_id = "ctxtrackslot12345"
+    samples = np.linspace(-0.1, 0.1, 800, dtype=np.float32)
+
+    patches = _local_session_patches()
+    try:
+        with (
+            patches[0],
+            patches[1] as mock_lm_client_class,
+            patches[2] as mock_kokoro_class,
+            patches[3],
+            patches[4],
+            patches[5] as mock_beat_track_class,
+            patches[6] as mock_engine_class,
+            patch("vokel.web.QuantizedPlaybackSink", wraps=QuantizedPlaybackSink),
+            patch("vokel.web.secrets.token_hex", return_value=slot_id),
+        ):
+            mock_lm_client_class.return_value = mock_llm
+            mock_kokoro_class.return_value = MagicMock()
+            mock_beat_track_class.return_value.start = AsyncMock()
+            mock_beat_track_class.return_value.stop = AsyncMock()
+            mock_beat_track_class.return_value.load_buffer = MagicMock()
+
+            client = TestClient(app)
+            with client.websocket_connect("/api/ws") as websocket:
+                receive_expected(websocket, ("execute_state",))
+                # Slot is allocated empty on connect; seed filename as upload would.
+                slot = _musical_track_slots[slot_id]
+                slot.buffer = samples
+                slot.filename = "breakfast-beats.mp3"
+                websocket.send_json({
+                    "type": "start_session",
+                    "mode": "local",
+                    "playback": "kokoro",
+                    "url": "http://mocked:1234",
+                    "model": "mock-model",
+                    "musical_mode": True,
+                    "musical_bpm": 120,
+                    "session_context": "rapping about breakfast",
+                })
+                receive_expected(websocket, ("session_started",))
+                config = mock_engine_class.call_args.kwargs["config"]
+                prompt = config.system_prompt
+                bpm_i = prompt.index("120 BPM")
+                topic_i = prompt.index("The performance topic is: rapping about breakfast.")
+                track_i = prompt.index(
+                    "The backing track file is named 'breakfast-beats.mp3'"
+                )
+                mishear_i = prompt.index("imperfect speech-to-text")
+                assert bpm_i < topic_i < track_i < mishear_i
+                # Slice 10 no-context musical prompt is a strict prefix of this one.
+                base_addendum_end = prompt.index(" The performance topic is:")
+                no_context_prompt = prompt[:base_addendum_end]
+                assert "120 BPM" in no_context_prompt
+                assert "rapper" in no_context_prompt.lower()
+                assert "performance topic" not in no_context_prompt
+                websocket.send_json({"type": "stop_session"})
+                receive_expected(websocket, ("session_stopped",))
+    finally:
+        _musical_track_slots.pop(slot_id, None)
+
+
+def test_websocket_musical_mode_context_without_track_omits_filename() -> None:
+    mock_llm = MagicMock()
+    mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
+    mock_llm.__aexit__ = AsyncMock(return_value=None)
+
+    patches = _local_session_patches()
+    with (
+        patches[0],
+        patches[1] as mock_lm_client_class,
+        patches[2] as mock_kokoro_class,
+        patches[3],
+        patches[4],
+        patches[5] as mock_beat_track_class,
+        patches[6] as mock_engine_class,
+        patch("vokel.web.QuantizedPlaybackSink", wraps=QuantizedPlaybackSink),
+    ):
+        mock_lm_client_class.return_value = mock_llm
+        mock_kokoro_class.return_value = MagicMock()
+        mock_beat_track_class.return_value.start = AsyncMock()
+        mock_beat_track_class.return_value.stop = AsyncMock()
+
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws") as websocket:
+            receive_expected(websocket, ("execute_state",))
+            websocket.send_json({
+                "type": "start_session",
+                "mode": "local",
+                "playback": "kokoro",
+                "url": "http://mocked:1234",
+                "model": "mock-model",
+                "musical_mode": True,
+                "musical_bpm": 90,
+                "session_context": "space opera freestyle",
+            })
+            receive_expected(websocket, ("session_started",))
+            prompt = mock_engine_class.call_args.kwargs["config"].system_prompt
+            assert "The performance topic is: space opera freestyle." in prompt
+            assert "backing track file is named" not in prompt
+            assert "imperfect speech-to-text" in prompt
+            websocket.send_json({"type": "stop_session"})
+            receive_expected(websocket, ("session_stopped",))
+
+
 def test_websocket_musical_bpm_is_clamped() -> None:
     mock_llm = MagicMock()
     mock_llm.__aenter__ = AsyncMock(return_value=mock_llm)
@@ -761,6 +952,37 @@ def test_upload_musical_track_decodes_and_stores_buffer() -> None:
         assert stored is not None
         assert stored.shape == samples.shape
         assert np.allclose(stored, samples)
+        assert _musical_track_slots[slot_id].filename == "loop.wav"
+    finally:
+        _musical_track_slots.pop(slot_id, None)
+
+
+def test_upload_musical_track_sanitizes_filename() -> None:
+    samples = np.linspace(-0.25, 0.25, 1200, dtype=np.float32)
+    slot_id = "nameslot12345678"
+    _musical_track_slots[slot_id] = _MusicalTrackSlot()
+    long_name = "a" * 100 + ".mp3"
+    try:
+        with patch("vokel.web.decode_audio_file", return_value=samples):
+            client = TestClient(app)
+            response = client.post(
+                "/api/musical/track",
+                params={"slot": slot_id},
+                files={"file": ("../../evil.mp3", b"RIFFfake", "audio/wav")},
+            )
+            assert response.status_code == 200
+            assert _musical_track_slots[slot_id].filename == "evil.mp3"
+
+            response = client.post(
+                "/api/musical/track",
+                params={"slot": slot_id},
+                files={"file": (long_name, b"RIFFfake", "audio/wav")},
+            )
+            assert response.status_code == 200
+            stored_name = _musical_track_slots[slot_id].filename
+            assert stored_name is not None
+            assert len(stored_name) == 80
+            assert stored_name == long_name[:80]
     finally:
         _musical_track_slots.pop(slot_id, None)
 
@@ -840,6 +1062,7 @@ def test_delete_musical_track_clears_slot_and_live_player() -> None:
         assert response.content == b""
         slot = _musical_track_slots[slot_id]
         assert slot.buffer is None
+        assert slot.filename is None
         assert slot.player is not None
         assert not player._external_buffer
         assert player._buffer is not None

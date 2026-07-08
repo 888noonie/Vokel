@@ -4,6 +4,7 @@ import unittest
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
+from vokel.config import VoiceLoopConfig
 from vokel.engine import ConversationEngine
 from vokel.events import Event, TextDeltaEvent
 from vokel.agent_backend import TOOL_ACTIVITY_REPORTING_CONTRACT
@@ -276,9 +277,45 @@ class ConversationEngineTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await engine.close()
 
-        self.assertEqual(llm.messages[0][0], {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT})
-        self.assertEqual(llm.messages[0][1], {"role": "user", "content": "Search for the latest UK news today."})
+        self.assertEqual(
+            llm.messages[0][0],
+            {"role": "system", "content": engine._session_system_prompt()},
+        )
+        self.assertEqual(llm.messages[0][1], {"role": "system", "content": TOOL_ACTIVITY_REPORTING_CONTRACT})
+        self.assertEqual(llm.messages[0][2], {"role": "user", "content": "Search for the latest UK news today."})
         self.assertEqual(engine.history[-1], {"role": "assistant", "content": "Hermes says hi."})
+
+    async def test_hermes_mode_forwards_session_system_prompt_with_topic(self) -> None:
+        llm: Any = FakeLlm([TextDeltaEvent("Bars about breakfast.")])
+        playback = RecordingPlayback()
+        base = VoiceLoopConfig()
+        engine = ConversationEngine(
+            agent=llm,
+            playback=playback,
+            agent_mode="hermes",
+            config=VoiceLoopConfig(
+                system_prompt=base.system_prompt
+                + " Session topic: rapping about breakfast."
+            ),
+        )
+
+        await engine.start()
+        try:
+            await engine.submit_turn("It's time to rap.")
+            await engine.wait_for_playback()
+        finally:
+            await engine.close()
+
+        system_texts = [
+            m["content"] for m in llm.messages[0] if m["role"] == "system"
+        ]
+        self.assertTrue(
+            any("Session topic: rapping about breakfast." in text for text in system_texts)
+        )
+        self.assertTrue(
+            any(TOOL_ACTIVITY_REPORTING_CONTRACT in text for text in system_texts)
+        )
+        self.assertEqual(llm.messages[0][-1], {"role": "user", "content": "It's time to rap."})
 
     async def test_hermes_mode_queues_speech_after_full_response_for_link_sanitizing(self) -> None:
         llm: Any = FakeLlm([
