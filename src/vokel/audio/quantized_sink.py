@@ -5,6 +5,7 @@ from typing import Literal
 
 from vokel.audio.beatclock import BeatClock, ClockStopped
 from vokel.playback import PlaybackSink
+from vokel.telemetry import LatencyTrace
 
 Quantum = Literal["beat", "bar"]
 
@@ -17,13 +18,17 @@ class QuantizedPlaybackSink:
         inner: PlaybackSink,
         clock: BeatClock,
         quantum: Quantum = "beat",
+        trace: LatencyTrace | None = None,
     ) -> None:
         self.inner = inner
         self.clock = clock
         self.quantum = quantum
+        self.trace = trace
         self._stop_requested = asyncio.Event()
 
     async def speak(self, phrase: str) -> None:
+        if self.trace is not None:
+            self.trace.mark("musical_gate_entered")
         self._stop_requested.clear()
         wait_gate = (
             self.clock.wait_for_downbeat()
@@ -48,8 +53,12 @@ class QuantizedPlaybackSink:
         try:
             beat_task.result()
         except ClockStopped:
+            if self.trace is not None:
+                self.trace.mark("musical_gate_opened", reason="clock_stopped")
             await self.inner.speak(phrase)
             return
+        if self.trace is not None:
+            self.trace.mark("musical_gate_opened")
         await self.inner.speak(phrase)
 
     async def stop(self) -> None:

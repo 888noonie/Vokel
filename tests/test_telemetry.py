@@ -56,6 +56,15 @@ class LatencyTraceTests(unittest.TestCase):
             },
         )
 
+    def test_summary_reports_phrase_start_to_beat(self):
+        ticks = iter([1_000_000_000, 1_500_000_000])
+        trace = LatencyTrace(clock=lambda: next(ticks))
+
+        trace.mark("musical_gate_entered")
+        trace.mark("musical_gate_opened")
+
+        self.assertEqual(trace.summary_ms()["phrase_start_to_beat"], 500.0)
+
     def test_reset_removes_events(self):
         trace = LatencyTrace(clock=lambda: 1)
 

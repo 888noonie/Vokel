@@ -25,6 +25,16 @@ Walk:
   7. Ask a short question — TTS phrases should land on the beat grid
   8. Interrupt (barge-in) — speech stops instantly; beat keeps playing
   9. Stop session — beat and clock should tear down cleanly
+ 10. Style selector: switch Beat Loop ↔ Metronome mid-session; sound changes on the next bar
+ 11. Tap tempo: tap 5+ times; BPM follows. Pause >2 s and tap again — the buffer resets
+     (Slice 8 rider) rather than averaging across the gap
+ 12. Load track: upload an mp3/wav (requires ffmpeg on PATH — Load Track is greyed out if
+     missing). Uploaded track replaces the synth loop and respects the manual BPM. Note:
+     uploaded track overrides the style selector by design
+ 13. Nudge: ±25 ms drift nudge shifts phrase alignment audibly
+ 14. Clear track: synth loop returns immediately (server-side DELETE, Slice 9)
+ 15. Panels: collapse a couple of settings panels, reload the page — collapsed state
+     persists; the beat dot still pulses on the collapsed Beat panel header
 
 Quick automated check (no mic needed):
   Run Task → "Vokel: Probe Musical Mode (WS beats)"

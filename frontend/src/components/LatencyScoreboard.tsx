@@ -13,6 +13,11 @@ export const LatencyScoreboard: React.FC<LatencyScoreboardProps> = ({ metrics })
     turn_to_first_phrase: { target: 900, label: "Turn to First Phrase", desc: "First speakable text unit" },
     capture_duration: { target: 15000, label: "Capture Duration", desc: "Time user spent speaking" },
     generation_duration: { target: 3000, label: "LLM Generation", desc: "Total text generation duration" },
+    phrase_start_to_beat: {
+      target: 700,
+      label: "Phrase to Beat",
+      desc: "Wait at the beat gate (≤ one beat @ 90 BPM)",
+    },
   };
 
   const getStatusColor = (key: string, value: number) => {

@@ -68,6 +68,7 @@ class LatencyTrace:
             "generation_to_interruption": ("generation_started", "interruption_requested"),
             "interruption_to_playback_stop": ("interruption_requested", "playback_stop_requested"),
             "turn_to_playback_stop": ("turn_submitted", "playback_stop_requested"),
+            "phrase_start_to_beat": ("musical_gate_entered", "musical_gate_opened"),
         }
         summary: dict[str, float] = {}
         for label, (start, end) in pairs.items():

@@ -14,6 +14,7 @@ Vokel optimizes for perceived conversational immediacy, not just raw throughput.
 | `turn_to_playback_start_ms` | `<1000` | The key "it is answering me" moment. |
 | `asr_duration_ms` | `<350` | Applies after VAD turn completion for batch ASR. |
 | `generation_duration_ms` | variable | Less important than first useful audio. |
+| `phrase_start_to_beat_ms` | `<700` | Musical mode only: gate wait before first phrase; worst case is one beat interval, scales with BPM. |
 
 ## Current Measurement Modes
 

@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import secrets
+import shutil
 import tempfile
 import traceback
 from dataclasses import dataclass, replace
@@ -585,6 +586,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "risk": execute_risk,
             "detail": detail,
             "musical_track_slot": musical_track_slot,
+            "ffmpeg_available": shutil.which("ffmpeg") is not None,
         })
 
     async def request_browser_frame(timeout: float = 3.0) -> str | None:
@@ -1123,6 +1125,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 playback,
                                 musical_clock,
                                 quantum="beat",
+                                trace=trace,
                             )
                             base = VoiceLoopConfig()
                             voice_loop_config = VoiceLoopConfig(

@@ -219,6 +219,7 @@ function App() {
     aiViewing: boolean;
   }>({ label: "Camera idle", aiViewing: false });
   const [beatCollapsedPulse, setBeatCollapsedPulse] = useState(false);
+  const [ffmpegAvailable, setFfmpegAvailable] = useState(true);
 
   const socketRef = useRef<WebSocket | null>(null);
   // Set by LiveVisionPanel; grabs one JPEG from the live preview on the server's request.
@@ -550,6 +551,9 @@ function App() {
           case "execute_state":
             if (typeof data.musical_track_slot === "string") {
               musicalTrackSlotRef.current = data.musical_track_slot;
+            }
+            if (typeof data.ffmpeg_available === "boolean") {
+              setFfmpegAvailable(data.ffmpeg_available);
             }
             setExecuteState({
               armed: Boolean(data.armed),
@@ -1541,6 +1545,14 @@ function App() {
             }
           >
             <p className="text-[11px] leading-relaxed text-zinc-500">{platformCapabilitiesCopy}</p>
+            <p
+              className={`mt-2 text-[11px] leading-relaxed ${
+                ffmpegAvailable ? "text-zinc-500" : "text-amber-400/90"
+              }`}
+            >
+              Backing-track upload:{" "}
+              {ffmpegAvailable ? "ready (ffmpeg found)" : "unavailable — install ffmpeg"}
+            </p>
           </CollapsibleSection>
 
           <CollapsibleSection
@@ -1851,14 +1863,19 @@ function App() {
                     />
                   </div>
 
-                  <div>
+                  <div className={!ffmpegAvailable ? "opacity-50" : undefined}>
                     <label className="block text-xs font-bold text-zinc-500 font-mono mb-1.5 uppercase">
                       Load Track
                     </label>
                     <input
                       type="file"
                       accept="audio/*,.mp3,.wav,.flac,.aac,.ogg,.m4a"
-                      disabled={musicalTrackUploading || !isConnected}
+                      disabled={musicalTrackUploading || !isConnected || !ffmpegAvailable}
+                      title={
+                        ffmpegAvailable
+                          ? undefined
+                          : "Install ffmpeg to enable backing-track upload"
+                      }
                       onChange={(event) => {
                         const file = event.target.files?.[0];
                         if (file) {
@@ -1866,7 +1883,7 @@ function App() {
                         }
                         event.currentTarget.value = "";
                       }}
-                      className="block w-full text-xs text-zinc-400 file:mr-3 file:rounded-lg file:border-0 file:bg-purple-500/15 file:px-3 file:py-2 file:font-mono file:text-[10px] file:uppercase file:text-purple-200"
+                      className="block w-full text-xs text-zinc-400 file:mr-3 file:rounded-lg file:border-0 file:bg-purple-500/15 file:px-3 file:py-2 file:font-mono file:text-[10px] file:uppercase file:text-purple-200 disabled:cursor-not-allowed"
                     />
                     {musicalTrackInfo && (
                       <p className="mt-1.5 text-[10px] font-mono text-zinc-500">

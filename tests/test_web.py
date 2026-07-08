@@ -314,6 +314,23 @@ def test_websocket_voice_preview_does_not_start_session(mock_kokoro_class: Magic
         assert finished == {"type": "voice_preview_finished", "voice": "af_heart"}
 
 
+def test_websocket_execute_state_reports_ffmpeg_available() -> None:
+    client = TestClient(app)
+    with (
+        patch("vokel.web.shutil.which", return_value="/usr/bin/ffmpeg"),
+        client.websocket_connect("/api/ws") as websocket,
+    ):
+        initial = receive_expected(websocket, ("execute_state",))
+        assert initial["ffmpeg_available"] is True
+
+    with (
+        patch("vokel.web.shutil.which", return_value=None),
+        client.websocket_connect("/api/ws") as websocket,
+    ):
+        initial = receive_expected(websocket, ("execute_state",))
+        assert initial["ffmpeg_available"] is False
+
+
 def test_websocket_execute_consent_scaffold() -> None:
     client = TestClient(app)
     with client.websocket_connect("/api/ws") as websocket:

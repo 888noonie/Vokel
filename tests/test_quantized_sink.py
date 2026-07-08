@@ -6,6 +6,7 @@ from typing import Any
 from vokel.audio.beatclock import BeatClock
 from vokel.audio.quantized_sink import QuantizedPlaybackSink
 from vokel.engine import ConversationEngine
+from vokel.telemetry import LatencyTrace
 from vokel.events import Event, TextDeltaEvent
 from vokel.inference import ChatMessage
 from vokel.playback import PlaybackSink
@@ -155,6 +156,63 @@ class QuantizedPlaybackSinkTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(accepts_playback_sink(sink))
+
+    async def test_trace_marks_gate_on_release_path(self) -> None:
+        clock = BeatClock(bpm=6000.0)
+        await clock.start()
+
+        inner = FakeSink()
+        trace = LatencyTrace()
+        sink = QuantizedPlaybackSink(inner, clock, trace=trace)
+
+        await sink.speak("on grid")
+        await clock.stop()
+
+        self.assertIsNotNone(trace.first("musical_gate_entered"))
+        self.assertIsNotNone(trace.first("musical_gate_opened"))
+        self.assertNotIn("reason", trace.first("musical_gate_opened").fields)
+
+    async def test_trace_no_open_mark_on_stop_path(self) -> None:
+        clock = BeatClock(bpm=6000.0)
+        await clock.start()
+
+        inner = FakeSink()
+        trace = LatencyTrace()
+        sink = QuantizedPlaybackSink(inner, clock, trace=trace)
+
+        speak_task = asyncio.create_task(sink.speak("parked"))
+        await asyncio.sleep(0.002)
+        await sink.stop()
+        await speak_task
+        await clock.stop()
+
+        self.assertIsNotNone(trace.first("musical_gate_entered"))
+        self.assertIsNone(trace.first("musical_gate_opened"))
+
+    async def test_trace_clock_stopped_marks_open_with_reason(self) -> None:
+        clock = BeatClock(bpm=6000.0)
+        inner = FakeSink()
+        trace = LatencyTrace()
+        sink = QuantizedPlaybackSink(inner, clock, trace=trace)
+
+        await sink.speak("unquantized")
+
+        self.assertIsNotNone(trace.first("musical_gate_entered"))
+        opened = trace.first("musical_gate_opened")
+        self.assertIsNotNone(opened)
+        self.assertEqual(opened.fields.get("reason"), "clock_stopped")
+
+    async def test_trace_none_leaves_byte_identical_behavior(self) -> None:
+        clock = BeatClock(bpm=6000.0)
+        await clock.start()
+
+        inner = FakeSink()
+        sink = QuantizedPlaybackSink(inner, clock, trace=None)
+
+        await sink.speak("on grid")
+        await clock.stop()
+
+        self.assertEqual(len(inner.spoken), 1)
 
     async def test_engine_interrupt_with_quantized_sink_no_hang(self) -> None:
         clock = BeatClock(bpm=30.0)
