@@ -34,7 +34,7 @@ and later phases are listed as next or planned.
 This review did not install or run Vokel, so the items below describe what is
 implemented and covered by tests in the source tree, not behaviour observed here.
 
-- **A working-shaped core is present.** `src/vokel/` contains the conversation
+- **The core implementation is present.** `src/vokel/` contains the conversation
   engine, streaming local inference client, external-agent HTTP and WebSocket
   clients, phrase chunking, playback sinks, telemetry, memory, tools, vision and
   the FastAPI web application.
@@ -113,8 +113,8 @@ chmod +x scripts/install.sh
 ```
 
 The script creates `.venv`, installs the package with its dev and audio extras,
-tries to install PortAudio through `apt-get`, downloads the minimal models and
-creates `.env` from `.env.example`. On a non-Debian system, install PortAudio
+tries to install PortAudio through `apt-get`, attempts to download the minimal
+models and creates `.env` from `.env.example`. On a non-Debian system, install PortAudio
 with the distribution's package manager instead and run the remaining steps
 manually:
 
@@ -122,6 +122,13 @@ manually:
 python3 -m venv .venv
 source .venv/bin/activate
 uv pip install -e ".[dev,audio]"
+```
+
+Activate the environment in each new shell before using the `vokel` command:
+
+```bash
+cd <path-to-repo>
+source .venv/bin/activate
 ```
 
 Run a single text turn against a local OpenAI-compatible server:
@@ -156,8 +163,8 @@ PYTHONPATH=src python3 -m benchmarks.stst_latency
 ```
 
 Inspect the design in `docs/`, especially `docs/latency-budget.md`,
-`docs/memory.md`, `docs/agent-tools.md`, `docs/agent-extensions.md` and
-`docs/android-termux-hermes.md`.
+`docs/memory.md`, `docs/agent-tools.md`, `docs/agent-extensions.md` and the
+Android/Termux notes under `docs/`.
 
 ## Tests and build evidence
 
@@ -168,8 +175,8 @@ Inspect the design in `docs/`, especially `docs/latency-budget.md`,
   build and an ESLint configuration. The Makefile has `install`, `build`,
   `start`, `test` and `clean` targets.
 - There is no `.github/` directory and therefore no CI workflow.
-- No test, build, install or benchmark command was executed. No model files,
-  virtual environment or running model server were present.
+- No test, build, install or benchmark command was executed. No model files or
+  virtual environment were present in the checkout.
 
 **Claimed by the project**
 
