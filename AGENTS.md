@@ -60,3 +60,31 @@ Fast output is not useful if barge-in fails.
 When adding a new model, library, or repo pattern, record the reason in `ROADMAP.md` or the local ignored `build-log.md`.
 
 Prefer primary sources for fast-moving dependencies such as Sherpa-ONNX, llama.cpp, Android NNAPI/GPU backends, and on-device TTS projects.
+
+## Cursor Cloud specific instructions
+
+### Activate the virtualenv
+
+All commands assume the project venv is active:
+
+```bash
+source .venv/bin/activate
+```
+
+### Key commands
+
+| Task | Command |
+|---|---|
+| Lint | `ruff check src/ tests/` |
+| Type-check | `mypy src/voyce/` |
+| Tests | `python3 -m pytest -q` |
+| Synthetic benchmark | `PYTHONPATH=src python3 -m benchmarks.stst_latency` |
+| CLI (needs LM Studio) | `python3 -m voyce.cli "prompt"` |
+| TUI (needs LM Studio) | `python3 -m voyce.tui` |
+
+### Notes
+
+- **LM Studio is unavailable** in the cloud VM. The CLI and TUI require it at `localhost:1234`. Use the synthetic benchmark mode (no external deps) to verify the engine pipeline.
+- **mypy has a pre-existing error** in `src/voyce/audio.py:41` (assigning `None` to a module-typed variable in an optional-import guard). This is expected and not a regression.
+- **numpy is needed for all tests to pass.** The update script installs `.[dev]` only. If 4 tests in `test_audio_probe` / `test_vad_probe` fail with `ModuleNotFoundError: numpy`, run `pip install numpy` inside the venv.
+- The `[audio]` optional extra (`pip install -e ".[audio,dev]"`) pulls heavier native deps (sounddevice, sherpa-onnx, kokoro-onnx) and requires `portaudio19-dev`. Only install when working on audio-path code.
